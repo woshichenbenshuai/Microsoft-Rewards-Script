@@ -131,6 +131,29 @@ The home-VM compose profile uses `API_MODE=false`, publishes no ports, starts no
 Rewards run when the container is created or restarted, and schedules each run
 for 5-50 minutes after 07:00 in `Asia/Shanghai`.
 
+The scheduler also keeps `config/safety-state.json` on the persistent
+`config/` mount. It allows only one run to start per Beijing calendar day,
+including after container restarts. A Bot Warning, unusual-activity warning,
+account lock, CAPTCHA, or unattended manual-verification request opens a
+persistent safety circuit immediately. Ordinary login failures open it after
+two distinct run days; network and individual activity failures do not.
+
+```bash
+# Show the circuit and last-run state
+docker compose exec microsoft-rewards-script npm run safety:status
+
+# Show only the last-run state
+docker compose exec microsoft-rewards-script npm run run-state:status
+
+# Reset the circuit after manually checking the account.
+# This does not clear today's run marker or start Rewards.
+docker compose exec microsoft-rewards-script npm run safety:reset
+```
+
+When the circuit is open, future cron triggers stop before contacting
+Microsoft. Telegram summary mode sends one redacted circuit-opening alert;
+subsequent skipped days do not repeat it.
+
 ---
 
 ## Control API and Dashboard
@@ -372,8 +395,8 @@ Account browser proxies support `http://`, `https://`, `socks4://`, and `socks5:
 | `webhook.telegram.enabled`               | boolean  | `false`                                              | Enable Telegram webhook           | `CONFIG_TELEGRAM_ENABLED`               |
 | `webhook.telegram.botToken`              | string   | `""`                                                 | Telegram bot token                | `CONFIG_TELEGRAM_BOTTOKEN`              |
 | `webhook.telegram.chatId`                | string   | `""`                                                 | Telegram chat id                  | `CONFIG_TELEGRAM_CHATID`                |
-| `webhook.telegram.summaryOnly`           | boolean  | `false`                                              | Send one terminal run summary    | `CONFIG_TELEGRAM_SUMMARY_ONLY`          |
-| `webhook.telegram.proxyUrl`              | string   | `""`                                                 | Telegram-only proxy URL          | `CONFIG_TELEGRAM_PROXY_URL`             |
+| `webhook.telegram.summaryOnly`           | boolean  | `false`                                              | Send one terminal run summary     | `CONFIG_TELEGRAM_SUMMARY_ONLY`          |
+| `webhook.telegram.proxyUrl`              | string   | `""`                                                 | Telegram-only proxy URL           | `CONFIG_TELEGRAM_PROXY_URL`             |
 | `webhook.ntfy.enabled`                   | boolean  | `false`                                              | Enable ntfy notifications         | `CONFIG_NTFY_ENABLED`                   |
 | `webhook.ntfy.url`                       | string   | `""`                                                 | ntfy server URL                   | `CONFIG_NTFY_URL`                       |
 | `webhook.ntfy.topic`                     | string   | `""`                                                 | ntfy topic                        | `CONFIG_NTFY_TOPIC`                     |

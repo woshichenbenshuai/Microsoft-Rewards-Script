@@ -41,6 +41,25 @@ test('formats a failed summary without exposing account addresses or bot tokens'
     assert.doesNotMatch(message, /user@example\.com|ABC_secret/)
 })
 
+test('formats a single circuit-breaker summary without exposing raw secrets', () => {
+    const message = formatTelegramRunSummary({
+        expectedAccounts: 1,
+        successfulAccounts: 0,
+        failedAccounts: 1,
+        pointsGained: 20,
+        currentBalance: 300,
+        runtimeMinutes: '4.2',
+        safetyPaused: true,
+        safetyReason: 'CAPTCHA for user@example.com via bot123456:ABC_secret'
+    })
+
+    assert.match(message, /风控熔断已开启/)
+    assert.match(message, /后续定时任务已暂停/)
+    assert.match(message, /safety:reset/)
+    assert.doesNotMatch(message, /user@example\.com/)
+    assert.doesNotMatch(message, /ABC_secret/)
+})
+
 test('retains known points when an account fails after partial completion', () => {
     const partial = snapshotAccountBalance({ balanceKnown: true, initialPoints: 18, currentPoints: 293 })
 

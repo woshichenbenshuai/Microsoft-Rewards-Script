@@ -27,18 +27,20 @@ import type { Account } from './interface/Account'
 import HttpClient from './util/Http'
 import { sendDiscord, flushDiscordQueue } from './logging/Discord'
 import { sendNtfy, flushNtfyQueue } from './logging/Ntfy'
-import {
-    sendTelegram,
-    sendTelegramFatalFailure,
-    sendTelegramRunSummary,
-    flushTelegramQueue
-} from './logging/Telegram'
+import { sendTelegram, sendTelegramFatalFailure, sendTelegramRunSummary, flushTelegramQueue } from './logging/Telegram'
 import { resolveTelegramRuntimeConfig } from './util/TelegramRuntime'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import type { AppEarnablePoints } from './interface/Points'
 import { TerminalNotificationGate } from './logging/TerminalNotification'
 import { snapshotAccountBalance, totalKnownFinalBalance } from './util/RunStats'
+import {
+    claimDailyRun,
+    classifyImmediateSafetySignal,
+    isLoginFailureReason,
+    recordRunOutcome
+} from './util/SafetyState'
+import type { RunOutcomeResult, SafetySignal } from './util/SafetyState'
 
 interface ExecutionContext {
     isMobile: boolean
@@ -59,12 +61,14 @@ interface AccountStats {
     duration: number
     success: boolean
     error?: string
+    safetySignal?: SafetySignal
 }
 
 interface AccountRunResult {
     initialPoints: number
     collectedPoints: number
     skippedForBotWarning?: boolean
+    safetySignal?: SafetySignal
 }
 
 function runFailureReasons(stats: AccountStats[]): string[] {
@@ -73,6 +77,7 @@ function runFailureReasons(stats: AccountStats[]): string[] {
 
 const executionContext = new AsyncLocalStorage<ExecutionContext>()
 const terminalTelegramNotificationGate = new TerminalNotificationGate()
+let primaryRunClaimed = false
 
 export function getCurrentContext(): ExecutionContext {
     const context = executionContext.getStore()
@@ -98,6 +103,38 @@ async function notifyFatalFailureOnce(reason: string): Promise<void> {
             `[telegram] Failure alert could not be sent: ${error instanceof Error ? error.message : 'invalid Telegram configuration'}`
         )
     }
+}
+
+async function finalizePrimarySafetyState(
+    stats: AccountStats[],
+    status: 'success' | 'failed' | 'interrupted'
+): Promise<RunOutcomeResult | undefined> {
+    if (!cluster.isPrimary || !primaryRunClaimed) return undefined
+
+    const immediateSignal = stats.find(stat => stat.safetySignal)?.safetySignal
+    const outcome = await recordRunOutcome({
+        status,
+        immediateSignal,
+        hadLoginFailure: stats.some(stat => !stat.success && isLoginFailureReason(stat.error)),
+        hadSuccessfulLogin: stats.some(stat => stat.balanceKnown)
+    })
+    primaryRunClaimed = false
+    return outcome
+}
+
+async function finalizePrimaryFatalSafetyState(
+    value: unknown,
+    status: 'failed' | 'interrupted' = 'failed'
+): Promise<RunOutcomeResult | undefined> {
+    if (!cluster.isPrimary || !primaryRunClaimed) return undefined
+
+    const outcome = await recordRunOutcome({
+        status,
+        immediateSignal: classifyImmediateSafetySignal(value),
+        hadLoginFailure: isLoginFailureReason(value instanceof Error ? value.message : String(value))
+    })
+    primaryRunClaimed = false
+    return outcome
 }
 
 interface UserData {
@@ -379,6 +416,21 @@ export class MicrosoftRewardsBot {
                 const totalInitialPoints = allAccountStats.reduce((sum, s) => sum + s.initialPoints, 0)
                 const totalFinalPoints = allAccountStats.reduce((sum, s) => sum + s.finalPoints, 0)
                 const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
+                const successfulStats = allAccountStats.filter(stat => stat.success)
+                const successfulAccounts = successfulStats.length
+                const runSucceeded = !hadWorkerFailure && successfulAccounts === this.accounts.length
+                const safetyOutcome = await finalizePrimarySafetyState(
+                    allAccountStats,
+                    runSucceeded ? 'success' : 'failed'
+                )
+
+                if (safetyOutcome?.circuitJustOpened) {
+                    this.logger.warn(
+                        'main',
+                        'SAFETY-CIRCUIT',
+                        `Safety circuit opened: ${safetyOutcome.state.circuit.reason ?? 'manual review required'}`
+                    )
+                }
 
                 this.logger.info(
                     'main',
@@ -388,8 +440,6 @@ export class MicrosoftRewardsBot {
                 )
 
                 if (this.config.webhook.telegram?.summaryOnly && terminalTelegramNotificationGate.claim()) {
-                    const successfulStats = allAccountStats.filter(stat => stat.success)
-                    const successfulAccounts = successfulStats.length
                     await sendTelegramRunSummary(this.config.webhook.telegram, {
                         expectedAccounts: this.accounts.length,
                         successfulAccounts,
@@ -400,13 +450,15 @@ export class MicrosoftRewardsBot {
                         failureReasons: [
                             ...runFailureReasons(allAccountStats),
                             ...(hadWorkerFailure ? ['任务进程异常退出'] : [])
-                        ]
+                        ],
+                        safetyPaused: safetyOutcome?.state.circuit.open,
+                        safetyReason: safetyOutcome?.state.circuit.reason
                     })
                 }
 
                 await flushAllWebhooks()
 
-                process.exit(hadWorkerFailure ? 1 : 0)
+                process.exit(runSucceeded ? 0 : 1)
             }
         }
 
@@ -471,6 +523,7 @@ export class MicrosoftRewardsBot {
 
             try {
                 let flowFailureReason = 'Flow failed'
+                let flowSafetySignal: SafetySignal | undefined
                 const cachedRegion =
                     account.geoLocale === 'auto' ? loadResolvedRegion(this.config.sessionPath, accountEmail) : undefined
                 this.accountLocale = resolveAccountLocale(account, cachedRegion)
@@ -491,6 +544,7 @@ export class MicrosoftRewardsBot {
 
                 const result: AccountRunResult | undefined = await this.Main(account).catch(error => {
                     flowFailureReason = error instanceof Error ? error.message : String(error)
+                    flowSafetySignal = classifyImmediateSafetySignal(error)
                     void this.logger.error(
                         true,
                         'FLOW',
@@ -515,13 +569,14 @@ export class MicrosoftRewardsBot {
                             collectedPoints: 0,
                             duration: parseFloat(durationSeconds),
                             success: false,
-                            error: 'Microsoft bot-score warning detected'
+                            error: result.safetySignal?.reason ?? 'Microsoft bot-score warning detected',
+                            safetySignal: result.safetySignal
                         })
 
                         this.logger.warn(
                             'main',
                             'ACCOUNT-SKIP',
-                            `Skipped account: ${accountEmail} | reason=Fraud_UserWarning_BotScore_UX | durationSeconds=${durationSeconds}`
+                            `Skipped account: ${accountEmail} | reason=${result.safetySignal?.code ?? 'bot_warning'} | durationSeconds=${durationSeconds}`
                         )
                     } else {
                         accountStats.push({
@@ -548,7 +603,8 @@ export class MicrosoftRewardsBot {
                         ...balance,
                         duration: parseFloat(durationSeconds),
                         success: false,
-                        error: flowFailureReason
+                        error: flowFailureReason,
+                        safetySignal: flowSafetySignal
                     })
                 }
             } catch (error) {
@@ -565,7 +621,8 @@ export class MicrosoftRewardsBot {
                     ...balance,
                     duration: parseFloat(durationSeconds),
                     success: false,
-                    error: error instanceof Error ? error.message : String(error)
+                    error: error instanceof Error ? error.message : String(error),
+                    safetySignal: classifyImmediateSafetySignal(error)
                 })
             }
         }
@@ -585,6 +642,17 @@ export class MicrosoftRewardsBot {
 
             const successfulStats = accountStats.filter(stat => stat.success)
             const successfulAccounts = successfulStats.length
+            const runSucceeded = successfulAccounts === this.accounts.length
+            const safetyOutcome = await finalizePrimarySafetyState(accountStats, runSucceeded ? 'success' : 'failed')
+
+            if (safetyOutcome?.circuitJustOpened) {
+                this.logger.warn(
+                    'main',
+                    'SAFETY-CIRCUIT',
+                    `Safety circuit opened: ${safetyOutcome.state.circuit.reason ?? 'manual review required'}`
+                )
+            }
+
             if (this.config.webhook.telegram?.summaryOnly && terminalTelegramNotificationGate.claim()) {
                 await sendTelegramRunSummary(this.config.webhook.telegram, {
                     expectedAccounts: this.accounts.length,
@@ -593,12 +661,14 @@ export class MicrosoftRewardsBot {
                     pointsGained: totalCollectedPoints,
                     currentBalance: totalKnownFinalBalance(accountStats),
                     runtimeMinutes: totalDurationMinutes,
-                    failureReasons: runFailureReasons(accountStats)
+                    failureReasons: runFailureReasons(accountStats),
+                    safetyPaused: safetyOutcome?.state.circuit.open,
+                    safetyReason: safetyOutcome?.state.circuit.reason
                 })
             }
 
             await flushAllWebhooks()
-            process.exit(successfulAccounts === this.accounts.length ? 0 : 1)
+            process.exit(runSucceeded ? 0 : 1)
         }
 
         return accountStats
@@ -727,6 +797,9 @@ export class MicrosoftRewardsBot {
                 const hasBotScoreWarning =
                     Array.isArray(data.dashboard.userWarnings) &&
                     data.dashboard.userWarnings.some(warning => warning?.name === 'Fraud_UserWarning_BotScore_UX')
+                const hasUnusualActivityWarning =
+                    Array.isArray(data.dashboard.userWarnings) &&
+                    data.dashboard.userWarnings.some(warning => /unusual.*activity/i.test(warning?.name ?? ''))
 
                 if (hasBotScoreWarning) {
                     const availablePoints = data.dashboard.userStatus.availablePoints ?? 0
@@ -743,7 +816,11 @@ export class MicrosoftRewardsBot {
                         return {
                             initialPoints: availablePoints,
                             collectedPoints: 0,
-                            skippedForBotWarning: true
+                            skippedForBotWarning: true,
+                            safetySignal: {
+                                code: 'bot_warning',
+                                reason: 'Microsoft 返回 Bot Warning'
+                            }
                         }
                     }
 
@@ -753,6 +830,24 @@ export class MicrosoftRewardsBot {
                         `Microsoft Rewards reported Fraud_UserWarning_BotScore_UX for ${accountEmail}, but contintueOnBotWarning=true. ` +
                             'Continuing as configured is not recommended; waiting a few days is the preferred action.'
                     )
+                }
+
+                if (hasUnusualActivityWarning) {
+                    const availablePoints = data.dashboard.userStatus.availablePoints ?? 0
+                    this.logger.warn(
+                        'main',
+                        'UNUSUAL-ACTIVITY',
+                        `Microsoft Rewards displayed an unusual activity warning for ${accountEmail}; stopping this run.`
+                    )
+                    return {
+                        initialPoints: availablePoints,
+                        collectedPoints: 0,
+                        skippedForBotWarning: true,
+                        safetySignal: {
+                            code: 'unusual_activity',
+                            reason: 'Microsoft 显示异常活动警告'
+                        }
+                    }
                 }
 
                 const profileCountry = normalizeCountry(data.dashboard.userProfile.attributes.country)
@@ -1037,6 +1132,23 @@ export { executionContext }
 
 async function main(): Promise<void> {
     checkNodeVersion()
+
+    if (cluster.isPrimary) {
+        const decision = await claimDailyRun()
+        if (!decision.allowed) {
+            if (decision.reason === 'already_ran_today') {
+                console.log(`[safety] Skipping Rewards: a run already started on ${decision.date}`)
+            } else {
+                console.log(
+                    `[safety] Skipping Rewards: circuit is open (${decision.state.circuit.reason ?? 'manual review required'})`
+                )
+            }
+            return
+        }
+        primaryRunClaimed = true
+        console.log(`[safety] Claimed daily run for ${decision.date}`)
+    }
+
     const rewardsBot = new MicrosoftRewardsBot()
 
     process.on('beforeExit', () => {
@@ -1044,11 +1156,17 @@ async function main(): Promise<void> {
     })
     process.on('SIGINT', async () => {
         rewardsBot.logger.warn('main', 'PROCESS', 'SIGINT received, flushing and exiting...')
+        await finalizePrimaryFatalSafetyState('SIGINT', 'interrupted').catch(error => {
+            console.error('[safety] Could not finalize interrupted run:', error)
+        })
         await flushAllWebhooks()
         process.exit(130)
     })
     process.on('SIGTERM', async () => {
         rewardsBot.logger.warn('main', 'PROCESS', 'SIGTERM received, flushing and exiting...')
+        await finalizePrimaryFatalSafetyState('SIGTERM', 'interrupted').catch(error => {
+            console.error('[safety] Could not finalize interrupted run:', error)
+        })
         await flushAllWebhooks()
         process.exit(143)
     })
@@ -1062,7 +1180,16 @@ async function main(): Promise<void> {
             return
         }
         rewardsBot.logger.error('main', 'UNCAUGHT-EXCEPTION', error)
-        await notifyFatalFailureOnce(error instanceof Error ? error.message : String(error))
+        const safetyOutcome = await finalizePrimaryFatalSafetyState(error).catch(stateError => {
+            console.error('[safety] Could not finalize failed run:', stateError)
+            return undefined
+        })
+        const reason = safetyOutcome?.state.circuit.open
+            ? `风控熔断已开启：${safetyOutcome.state.circuit.reason ?? '需要人工检查'}`
+            : error instanceof Error
+              ? error.message
+              : String(error)
+        await notifyFatalFailureOnce(reason)
         await flushAllWebhooks()
         process.exit(1)
     })
@@ -1076,7 +1203,16 @@ async function main(): Promise<void> {
             return
         }
         rewardsBot.logger.error('main', 'UNHANDLED-REJECTION', reason as Error)
-        await notifyFatalFailureOnce(reason instanceof Error ? reason.message : String(reason))
+        const safetyOutcome = await finalizePrimaryFatalSafetyState(reason).catch(stateError => {
+            console.error('[safety] Could not finalize failed run:', stateError)
+            return undefined
+        })
+        const notificationReason = safetyOutcome?.state.circuit.open
+            ? `风控熔断已开启：${safetyOutcome.state.circuit.reason ?? '需要人工检查'}`
+            : reason instanceof Error
+              ? reason.message
+              : String(reason)
+        await notifyFatalFailureOnce(notificationReason)
         await flushAllWebhooks()
         process.exit(1)
     })
@@ -1086,7 +1222,16 @@ async function main(): Promise<void> {
         await rewardsBot.run()
     } catch (error) {
         rewardsBot.logger.error('main', 'MAIN-ERROR', error as Error)
-        await notifyFatalFailureOnce(error instanceof Error ? error.message : String(error))
+        const safetyOutcome = await finalizePrimaryFatalSafetyState(error).catch(stateError => {
+            console.error('[safety] Could not finalize failed run:', stateError)
+            return undefined
+        })
+        const reason = safetyOutcome?.state.circuit.open
+            ? `风控熔断已开启：${safetyOutcome.state.circuit.reason ?? '需要人工检查'}`
+            : error instanceof Error
+              ? error.message
+              : String(error)
+        await notifyFatalFailureOnce(reason)
         await flushAllWebhooks()
         process.exitCode = 1
     }
@@ -1094,7 +1239,16 @@ async function main(): Promise<void> {
 
 main().catch(async error => {
     console.error('[MAIN-ERROR]', error instanceof Error ? error.message : String(error))
-    await notifyFatalFailureOnce(error instanceof Error ? error.message : String(error))
+    const safetyOutcome = await finalizePrimaryFatalSafetyState(error).catch(stateError => {
+        console.error('[safety] Could not finalize failed run:', stateError)
+        return undefined
+    })
+    const reason = safetyOutcome?.state.circuit.open
+        ? `风控熔断已开启：${safetyOutcome.state.circuit.reason ?? '需要人工检查'}`
+        : error instanceof Error
+          ? error.message
+          : String(error)
+    await notifyFatalFailureOnce(reason)
     await flushAllWebhooks()
     process.exit(1)
 })

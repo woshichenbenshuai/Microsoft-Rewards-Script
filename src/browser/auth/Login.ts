@@ -4,10 +4,10 @@ import type { MicrosoftRewardsBot } from '../../index'
 import { saveStorageState } from '../../util/SessionStore'
 import { unknownPageDiagnostic } from '../../util/ErrorDiagnostic'
 import { configureMediaBlocking, suspendMediaBlocking } from '../MediaBlocker'
+import { SafetyTriggerError } from '../../util/SafetyState'
 
 import { MobileAccessLogin } from './methods/MobileAccessLogin'
 import { EmailLogin } from './methods/EmailLogin'
-import { PasswordlessLogin } from './methods/PasswordlessLogin'
 import { TotpLogin } from './methods/Totp2FALogin'
 import { CodeLogin } from './methods/GetACodeLogin'
 import { RecoveryLogin } from './methods/RecoveryEmailLogin'
@@ -27,6 +27,7 @@ type LoginState =
     | 'EMAIL_VERIFICATION_INPUT'
     | 'RECOVERY_EMAIL_INPUT'
     | 'ACCOUNT_LOCKED'
+    | 'CAPTCHA'
     | 'ERROR_ALERT'
     | '2FA_TOTP'
     | 'LOGIN_PASSWORDLESS'
@@ -46,7 +47,6 @@ type SignInMethodType = 'PASSWORD' | 'AUTHENTICATOR' | 'EMAIL' | 'PASSKEY' | 'TO
 
 export class Login {
     emailLogin: EmailLogin
-    passwordlessLogin: PasswordlessLogin
     totp2FALogin: TotpLogin
     codeLogin: CodeLogin
     recoveryLogin: RecoveryLogin
@@ -65,6 +65,8 @@ export class Login {
         recoveryEmail: '[data-testid="proof-confirmation"]',
         emailVerificationInput: 'input#proof-confirmation-email-input',
         accountLocked: '#serviceAbuseLandingTitle',
+        captcha:
+            'iframe[src*="arkoselabs"], iframe[src*="captcha"], [data-testid*="captcha"], input[name*="captcha"], #captcha',
         errorAlert: 'div[role="alert"]',
         passwordEntry: '[data-testid="passwordEntry"]',
         emailEntry: 'input#usernameEntry',
@@ -84,7 +86,6 @@ export class Login {
 
     constructor(private bot: MicrosoftRewardsBot) {
         this.emailLogin = new EmailLogin(this.bot)
-        this.passwordlessLogin = new PasswordlessLogin(this.bot)
         this.totp2FALogin = new TotpLogin(this.bot)
         this.codeLogin = new CodeLogin(this.bot)
         this.recoveryLogin = new RecoveryLogin(this.bot)
@@ -195,6 +196,12 @@ export class Login {
             return 'ACCOUNT_LOCKED'
         }
 
+        const hasCaptcha = await this.checkSelector(page, this.selectors.captcha)
+        if (hasCaptcha) {
+            this.bot.logger.warn(this.bot.isMobile, 'DETECT-STATE', 'CAPTCHA or anti-abuse challenge detected')
+            return 'CAPTCHA'
+        }
+
         if (hostname === 'bing.com' || hostname.endsWith('.bing.com') || hostname === 'account.microsoft.com') {
             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', 'On Bing/rewards/account page, assuming logged in')
             return 'LOGGED_IN'
@@ -296,6 +303,7 @@ export class Login {
 
         const priorities: LoginState[] = [
             'ACCOUNT_LOCKED',
+            'CAPTCHA',
             'PASSKEY_VIDEO',
             'PASSKEY_ERROR',
             'KMSI_PROMPT',
@@ -463,7 +471,12 @@ export class Login {
             case 'ACCOUNT_LOCKED': {
                 const msg = 'This account has been locked! Remove from config and restart!'
                 this.bot.logger.error(this.bot.isMobile, 'LOGIN', msg)
-                throw new Error(msg)
+                throw new SafetyTriggerError('account_locked')
+            }
+
+            case 'CAPTCHA': {
+                this.bot.logger.error(this.bot.isMobile, 'LOGIN', 'CAPTCHA or anti-abuse challenge requires review')
+                throw new SafetyTriggerError('captcha')
             }
 
             case 'ERROR_ALERT': {
@@ -643,6 +656,9 @@ export class Login {
 
             // Recovery email confirmation
             case 'RECOVERY_EMAIL_INPUT': {
+                if (!account.recoveryEmail && !canPromptForInput()) {
+                    throw new SafetyTriggerError('manual_verification')
+                }
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Recovery email input detected')
                 await this.waitForIdle(page, 'on recovery page')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Initiating recovery email handler')
@@ -660,7 +676,7 @@ export class Login {
                             'LOGIN',
                             'Email verification requires a configured password or interactive stdin'
                         )
-                        return false
+                        throw new SafetyTriggerError('manual_verification')
                     }
 
                     this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Email verification input detected')
@@ -712,7 +728,7 @@ export class Login {
                 }
 
                 this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'No usable email verification alternative found')
-                return false
+                throw new SafetyTriggerError('manual_verification')
             }
 
             case 'CHROMEWEBDATA_ERROR': {
@@ -778,12 +794,7 @@ export class Login {
 
             // Microsoft Authenticator approval/number challenge
             case 'LOGIN_PASSWORDLESS': {
-                this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Handling passwordless authentication')
-                await this.passwordlessLogin.handle(page)
-                this.passwordlessMethodSelected = false
-                await this.waitForIdle(page, 'after passwordless auth')
-                this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Passwordless authentication completed successfully')
-                return true
+                throw new SafetyTriggerError('manual_verification')
             }
 
             // Enter your code - prefer its alternate-method footer before Back to avoid an email-code loop
@@ -835,7 +846,7 @@ export class Login {
                 this.passwordlessMethodSelected = false
                 if (!(await this.tryClick(page, this.selectors.backButton, 'Back button'))) {
                     this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'No usable alternative action found on OTP page')
-                    return false
+                    throw new SafetyTriggerError('manual_verification')
                 }
 
                 return true

@@ -165,6 +165,23 @@ else
     exit 0
 fi
 
+# Fail closed before waiting or contacting Microsoft. Exit codes 20 and 21 are
+# intentional skips for today's run marker and an open safety circuit.
+precheck_status=0
+node dist/cli/SafetyControl.js precheck || precheck_status=$?
+case "$precheck_status" in
+    0)
+        ;;
+    20|21)
+        echo "[$(date)] [run_daily.sh] Safety precheck skipped this run."
+        exit 0
+        ;;
+    *)
+        echo "[$(date)] [run_daily.sh] ERROR: Safety precheck failed; refusing to run." >&2
+        exit 1
+        ;;
+esac
+
 # Random sleep between MIN and MAX to spread execution
 MINWAIT=${MIN_SLEEP_MINUTES:-5}
 MAXWAIT=${MAX_SLEEP_MINUTES:-50}
@@ -210,6 +227,19 @@ else
         echo "[$(date)] [run_daily.sh] ERROR: Script failed!" >&2
         run_status=1
     fi
+fi
+
+# The application records detailed safety outcomes itself. This is a fallback
+# for hard process exits before the application can finalize persistent state.
+if [ "$run_status" -eq 0 ]; then
+    node dist/cli/SafetyControl.js finish success || {
+        echo "[$(date)] [run_daily.sh] ERROR: Could not finalize successful run state." >&2
+        run_status=1
+    }
+else
+    node dist/cli/SafetyControl.js finish failed || {
+        echo "[$(date)] [run_daily.sh] ERROR: Could not finalize failed run state." >&2
+    }
 fi
 
 echo "[$(date)] [run_daily.sh] Script finished"

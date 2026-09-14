@@ -21,6 +21,8 @@ export interface TelegramRunSummary {
     completedAt?: Date
     timeZone?: string
     failureReasons?: string[]
+    safetyPaused?: boolean
+    safetyReason?: string
 }
 
 function getTelegramEmoji(level: LogLevel): string {
@@ -66,7 +68,11 @@ function localCompletionTime(date: Date, timeZone: string): string {
 
 export function formatTelegramRunSummary(summary: TelegramRunSummary): string {
     const complete = summary.failedAccounts === 0 && summary.successfulAccounts === summary.expectedAccounts
-    const heading = complete ? '✅ Microsoft Rewards 每日任务完成' : '❌ Microsoft Rewards 每日任务未完整完成'
+    const heading = summary.safetyPaused
+        ? '⚠️ Microsoft Rewards 风控熔断已开启'
+        : complete
+          ? '✅ Microsoft Rewards 每日任务完成'
+          : '❌ Microsoft Rewards 每日任务未完整完成'
     const balanceLabel = complete ? '当前总积分' : '已知总积分'
     const balance = summary.currentBalance == null ? '未知' : String(summary.currentBalance)
     const timeZone = summary.timeZone || process.env.TZ || 'Asia/Shanghai'
@@ -79,6 +85,12 @@ export function formatTelegramRunSummary(summary: TelegramRunSummary): string {
         `耗时：${summary.runtimeMinutes} 分钟`,
         `完成时间：${completedAt} (${timeZone})`
     ]
+
+    if (summary.safetyPaused) {
+        lines.push('状态：后续定时任务已暂停')
+        lines.push(`熔断原因：${safeReason(summary.safetyReason ?? '需要人工检查')}`)
+        lines.push('恢复方式：检查账号后执行 npm run safety:reset')
+    }
 
     const reasons = (summary.failureReasons ?? []).map(safeReason).filter(Boolean).slice(0, 3)
     if (!complete && reasons.length) lines.push(`原因：${reasons.join('；')}`)
@@ -128,7 +140,9 @@ async function deliverTelegram(
                 (error as { response?: { status?: number }; status?: number })?.response?.status ??
                 (error as { status?: number })?.status
             if (options.throwOnError) {
-                throw new Error(status ? `Telegram notification failed with HTTP ${status}.` : 'Telegram notification failed.')
+                throw new Error(
+                    status ? `Telegram notification failed with HTTP ${status}.` : 'Telegram notification failed.'
+                )
             }
             console.warn(
                 status
