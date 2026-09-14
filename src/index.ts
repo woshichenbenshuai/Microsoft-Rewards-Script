@@ -38,6 +38,7 @@ import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import type { AppEarnablePoints } from './interface/Points'
 import { TerminalNotificationGate } from './logging/TerminalNotification'
+import { snapshotAccountBalance, totalKnownFinalBalance } from './util/RunStats'
 
 interface ExecutionContext {
     isMobile: boolean
@@ -51,6 +52,7 @@ interface BrowserSession {
 
 interface AccountStats {
     email: string
+    balanceKnown: boolean
     initialPoints: number
     finalPoints: number
     collectedPoints: number
@@ -106,6 +108,7 @@ interface UserData {
     initialPoints: number
     currentPoints: number
     gainedPoints: number
+    balanceKnown: boolean
 }
 
 export class MicrosoftRewardsBot {
@@ -157,7 +160,8 @@ export class MicrosoftRewardsBot {
             timezoneOffset: '60',
             initialPoints: 0,
             currentPoints: 0,
-            gainedPoints: 0
+            gainedPoints: 0,
+            balanceKnown: false
         }
         this.accountLocale = resolveAccountLocale({ langCode: 'en', geoLocale: 'US' })
         this.logger = new Logger(this)
@@ -391,9 +395,7 @@ export class MicrosoftRewardsBot {
                         successfulAccounts,
                         failedAccounts: this.accounts.length - successfulAccounts,
                         pointsGained: totalCollectedPoints,
-                        currentBalance: successfulStats.length
-                            ? successfulStats.reduce((sum, stat) => sum + stat.finalPoints, 0)
-                            : null,
+                        currentBalance: totalKnownFinalBalance(allAccountStats),
                         runtimeMinutes: totalDurationMinutes,
                         failureReasons: [
                             ...runFailureReasons(allAccountStats),
@@ -462,8 +464,13 @@ export class MicrosoftRewardsBot {
             const accountEmail = account.email
             this.userData.userName = this.utils.getEmailUsername(accountEmail)
             this.userData.timezoneOffset = String(new Date().getTimezoneOffset())
+            this.userData.initialPoints = 0
+            this.userData.currentPoints = 0
+            this.userData.gainedPoints = 0
+            this.userData.balanceKnown = false
 
             try {
+                let flowFailureReason = 'Flow failed'
                 const cachedRegion =
                     account.geoLocale === 'auto' ? loadResolvedRegion(this.config.sessionPath, accountEmail) : undefined
                 this.accountLocale = resolveAccountLocale(account, cachedRegion)
@@ -483,6 +490,7 @@ export class MicrosoftRewardsBot {
                 })
 
                 const result: AccountRunResult | undefined = await this.Main(account).catch(error => {
+                    flowFailureReason = error instanceof Error ? error.message : String(error)
                     void this.logger.error(
                         true,
                         'FLOW',
@@ -501,6 +509,7 @@ export class MicrosoftRewardsBot {
                     if (result.skippedForBotWarning) {
                         accountStats.push({
                             email: accountEmail,
+                            balanceKnown: true,
                             initialPoints: accountInitialPoints,
                             finalPoints: accountInitialPoints,
                             collectedPoints: 0,
@@ -517,6 +526,7 @@ export class MicrosoftRewardsBot {
                     } else {
                         accountStats.push({
                             email: accountEmail,
+                            balanceKnown: true,
                             initialPoints: accountInitialPoints,
                             finalPoints: accountFinalPoints,
                             collectedPoints: collectedPoints,
@@ -532,14 +542,13 @@ export class MicrosoftRewardsBot {
                         )
                     }
                 } else {
+                    const balance = snapshotAccountBalance(this.userData)
                     accountStats.push({
                         email: accountEmail,
-                        initialPoints: 0,
-                        finalPoints: 0,
-                        collectedPoints: 0,
+                        ...balance,
                         duration: parseFloat(durationSeconds),
                         success: false,
-                        error: 'Flow failed'
+                        error: flowFailureReason
                     })
                 }
             } catch (error) {
@@ -550,11 +559,10 @@ export class MicrosoftRewardsBot {
                     `${accountEmail}: ${error instanceof Error ? error.message : String(error)}`
                 )
 
+                const balance = snapshotAccountBalance(this.userData)
                 accountStats.push({
                     email: accountEmail,
-                    initialPoints: 0,
-                    finalPoints: 0,
-                    collectedPoints: 0,
+                    ...balance,
                     duration: parseFloat(durationSeconds),
                     success: false,
                     error: error instanceof Error ? error.message : String(error)
@@ -583,9 +591,7 @@ export class MicrosoftRewardsBot {
                     successfulAccounts,
                     failedAccounts: this.accounts.length - successfulAccounts,
                     pointsGained: totalCollectedPoints,
-                    currentBalance: successfulStats.length
-                        ? successfulStats.reduce((sum, stat) => sum + stat.finalPoints, 0)
-                        : null,
+                    currentBalance: totalKnownFinalBalance(accountStats),
                     runtimeMinutes: totalDurationMinutes,
                     failureReasons: runFailureReasons(accountStats)
                 })
@@ -789,6 +795,7 @@ export class MicrosoftRewardsBot {
 
                 this.userData.initialPoints = data.dashboard.userStatus.availablePoints
                 this.userData.currentPoints = data.dashboard.userStatus.availablePoints
+                this.userData.balanceKnown = true
                 const initialPoints = this.userData.initialPoints ?? 0
 
                 const browserEarnable = await this.browser.func.getBrowserEarnablePoints(data)

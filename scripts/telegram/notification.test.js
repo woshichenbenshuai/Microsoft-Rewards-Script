@@ -5,6 +5,7 @@ import { formatTelegramFatalFailure, formatTelegramRunSummary } from '../../dist
 import { resolveTelegramRuntimeConfig } from '../../dist/util/TelegramRuntime.js'
 import { TerminalNotificationGate } from '../../dist/logging/TerminalNotification.js'
 import { ENV_OVERRIDES } from '../../dist/util/ConfigEnvOverrides.js'
+import { snapshotAccountBalance, totalKnownFinalBalance } from '../../dist/util/RunStats.js'
 
 test('formats one successful run summary with gained and total points', () => {
     const message = formatTelegramRunSummary({
@@ -38,6 +39,31 @@ test('formats a failed summary without exposing account addresses or bot tokens'
     assert.match(message, /未完整完成/)
     assert.match(message, /已知总积分：未知/)
     assert.doesNotMatch(message, /user@example\.com|ABC_secret/)
+})
+
+test('retains known points when an account fails after partial completion', () => {
+    const partial = snapshotAccountBalance({ balanceKnown: true, initialPoints: 18, currentPoints: 293 })
+
+    assert.deepEqual(partial, {
+        balanceKnown: true,
+        initialPoints: 18,
+        finalPoints: 293,
+        collectedPoints: 275
+    })
+    assert.equal(totalKnownFinalBalance([partial]), 293)
+
+    const message = formatTelegramRunSummary({
+        expectedAccounts: 1,
+        successfulAccounts: 0,
+        failedAccounts: 1,
+        pointsGained: partial.collectedPoints,
+        currentBalance: totalKnownFinalBalance([partial]),
+        runtimeMinutes: '13.6',
+        failureReasons: ['Microsoft login error: Unknown Error']
+    })
+
+    assert.match(message, /本次获得：275/)
+    assert.match(message, /已知总积分：293/)
 })
 
 test('redacts secrets from fatal failure text', () => {
