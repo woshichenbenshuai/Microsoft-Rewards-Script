@@ -17,6 +17,7 @@ import {
 import { readSchedule, writeSchedule } from './scheduleStore.js'
 import { deleteStoredSessions, listStoredSessions } from './sessionStore.js'
 import { resolveRunCommand } from './runCommand.js'
+import { validateApiExposure } from './security.js'
 import {
     log,
     parseArgs,
@@ -47,7 +48,7 @@ Usage:
 Options:
   --host        Listen address. Defaults to API_HOST or 127.0.0.1.
   --port        Listen port from 1 to 65535. Defaults to API_PORT or 3010.
-  --token       One-time API token. API_TOKEN from .env takes precedence.
+  --token       One-time API token (minimum 32 characters). API_TOKEN from .env takes precedence.
   --help        Show this help.
 
 Examples:
@@ -142,6 +143,12 @@ function containsControlCharacters(value) {
 
 if (containsControlCharacters(HOST) || containsControlCharacters(CORS_ORIGIN)) {
     log('ERROR', 'API_HOST and API_CORS_ORIGIN must not contain control characters.')
+    process.exit(1)
+}
+
+const exposureValidation = validateApiExposure(HOST, TOKEN)
+if (!exposureValidation.ok) {
+    log('ERROR', exposureValidation.error)
     process.exit(1)
 }
 
@@ -581,7 +588,12 @@ const requestHandler = async (req, res) => {
             const overrides = {}
             let selectedAccount = null
             let excludedAccounts = []
-            if (body.args != null) overrides.args = body.args
+            if ('args' in body) {
+                return sendJson(res, 400, {
+                    error: 'Per-run child-process argument overrides are not supported.',
+                    code: 'BAD_REQUEST'
+                })
+            }
             if (body.env != null) {
                 if (!ALLOW_ENV_OVERRIDES) {
                     return sendJson(res, 403, {
@@ -635,7 +647,12 @@ const requestHandler = async (req, res) => {
             const overrides = { force: readForce(body) }
             let selectedAccount = null
             let excludedAccounts = []
-            if (body.args != null) overrides.args = body.args
+            if ('args' in body) {
+                return sendJson(res, 400, {
+                    error: 'Per-run child-process argument overrides are not supported.',
+                    code: 'BAD_REQUEST'
+                })
+            }
             if (body.env != null) {
                 if (!ALLOW_ENV_OVERRIDES) {
                     return sendJson(res, 403, {
@@ -823,12 +840,9 @@ server.listen(PORT, HOST, () => {
         `Runtime state: memory-only | config writes: ${ALLOW_CONFIG_WRITE ? 'on' : 'off'} | schedule writes: ${ALLOW_SCHEDULE_WRITE ? 'on' : 'off'} | session deletion: account-scoped`
     )
     if (!TOKEN) {
-        const loopback = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1'
         log(
-            loopback ? 'WARN' : 'ERROR',
-            loopback
-                ? 'No API_TOKEN set - the API is open to anything on this machine. Set API_TOKEN and give the dashboard the same value as CONTROL_API_TOKEN.'
-                : 'API is bound to a non-loopback address WITHOUT a token - anyone who can reach this port can start/stop the bot and read your logs. Set API_TOKEN.'
+            'WARN',
+            'No API_TOKEN set - loopback-only access is enforced, but anything on this machine can use the API. Set API_TOKEN and give the dashboard the same value as CONTROL_API_TOKEN.'
         )
     }
 

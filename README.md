@@ -121,11 +121,15 @@ ACCOUNT_1_EMAIL=email@example.com
 > If a new image adds config options you're missing, a warning will appear in the container logs.
 > To update, delete `./config/config.json` and restart - a fresh one will be generated from the latest example, with your `compose.yaml` overrides re-applied.
 
-- Start the container: `docker compose up -d`
+- Build the audited source in this repository and start the container: `docker compose up -d --build`
 
 > [!TIP]
 > Monitor logs with `docker logs microsoft-rewards-script`, useful for viewing passwordless login codes or diagnosing issues.
 > You can also enable a webhook in `compose.yaml` for notifications.
+
+The home-VM compose profile uses `API_MODE=false`, publishes no ports, starts no
+Rewards run when the container is created or restarted, and schedules each run
+for 5-50 minutes after 07:00 in `Asia/Shanghai`.
 
 ---
 
@@ -368,6 +372,8 @@ Account browser proxies support `http://`, `https://`, `socks4://`, and `socks5:
 | `webhook.telegram.enabled`               | boolean  | `false`                                              | Enable Telegram webhook           | `CONFIG_TELEGRAM_ENABLED`               |
 | `webhook.telegram.botToken`              | string   | `""`                                                 | Telegram bot token                | `CONFIG_TELEGRAM_BOTTOKEN`              |
 | `webhook.telegram.chatId`                | string   | `""`                                                 | Telegram chat id                  | `CONFIG_TELEGRAM_CHATID`                |
+| `webhook.telegram.summaryOnly`           | boolean  | `false`                                              | Send one terminal run summary    | `CONFIG_TELEGRAM_SUMMARY_ONLY`          |
+| `webhook.telegram.proxyUrl`              | string   | `""`                                                 | Telegram-only proxy URL          | `CONFIG_TELEGRAM_PROXY_URL`             |
 | `webhook.ntfy.enabled`                   | boolean  | `false`                                              | Enable ntfy notifications         | `CONFIG_NTFY_ENABLED`                   |
 | `webhook.ntfy.url`                       | string   | `""`                                                 | ntfy server URL                   | `CONFIG_NTFY_URL`                       |
 | `webhook.ntfy.topic`                     | string   | `""`                                                 | ntfy topic                        | `CONFIG_NTFY_TOPIC`                     |
@@ -388,6 +394,14 @@ Account browser proxies support `http://`, `https://`, `socks4://`, and `socks5:
 > **NTFY** users set the `webhookLogFilter` to `enabled`, or you will receive push notifications for _all_ logs.
 > When enabled, only account start, 2FA codes, and account completion summaries are delivered as push notifications.
 > Customize which notifications you receive with the `keywords` options.
+
+For the hardened home-VM deployment, Telegram credentials and its optional
+`http`, `https`, `socks4`, or `socks5` proxy are runtime-only `.env` values; they
+are not written to `config/config.json`. Set `CONFIG_TELEGRAM_SUMMARY_ONLY=true`
+to receive one Chinese success summary after a complete run, or one redacted
+failure warning when an account, worker, bot-score check, or run fails. Test the
+channel without running Rewards with `docker compose exec
+microsoft-rewards-script npm run telegram:test`.
 
 ---
 

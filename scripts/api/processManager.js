@@ -245,13 +245,12 @@ export class ProcessManager extends EventEmitter {
     }
 
     _resolveArgs(argsOverride) {
-        if (argsOverride == null) return this.defaultArgs
-        if (!Array.isArray(argsOverride) || !argsOverride.every(a => typeof a === 'string')) {
-            const err = new Error('`args` must be an array of strings.')
+        if (argsOverride != null) {
+            const err = new Error('Per-run child-process argument overrides are not supported.')
             err.code = 'BAD_REQUEST'
             throw err
         }
-        return argsOverride
+        return [...this.defaultArgs]
     }
 
     _resolveEnv(envOverride) {

@@ -64,7 +64,6 @@ other scripts in the project.
             - [Start all configured accounts](#start-all-configured-accounts)
             - [Start only one account](#start-only-one-account)
             - [Start all except selected accounts](#start-all-except-selected-accounts)
-            - [Override launch arguments](#override-launch-arguments)
             - [Add per-run environment variables](#add-per-run-environment-variables)
             - [Start errors](#start-errors)
         - [`POST /stop`](#post-stop)
@@ -297,8 +296,9 @@ repository's `package.json`.
 
 ## Authentication
 
-When `API_TOKEN` is unset, every endpoint is open. This is acceptable only when
-the API is bound to a trusted loopback interface.
+When `API_TOKEN` is unset, every endpoint is open and the server accepts only a
+loopback bind address. A non-loopback bind without a token is rejected at
+startup.
 
 When `API_TOKEN` is set, **every endpoint** requires the token, including `/`,
 `/health`, diagnostic files, and the SSE stream.
@@ -1158,7 +1158,6 @@ Supported body fields:
 | ------------------------ | ---------------------- | -------------------------------------------------------------------------------------- |
 | `accountIndex`           | positive integer       | Run only one configured `ACCOUNT_<N>` slot.                                            |
 | `excludedAccountIndexes` | positive integer array | Run every configured account except these slots.                                       |
-| `args`                   | string array           | Replace the API's default child-process arguments for this run.                        |
 | `env`                    | object                 | Add child-process-only environment overrides. Requires `API_ALLOW_ENV_OVERRIDES=true`. |
 
 `accountIndex` and `excludedAccountIndexes` are mutually exclusive.
@@ -1265,30 +1264,6 @@ response.
 
 Unknown slots and attempts to exclude every configured account return
 `400 Bad Request`.
-
-#### Override launch arguments
-
-**cURL**
-
-```bash
-curl --request POST \
-  --url http://127.0.0.1:3010/start \
-  --header 'Authorization: Bearer YOUR_API_TOKEN' \
-  --header 'Content-Type: application/json' \
-  --data '{"args":["/app/dist/index.js","--example-flag"]}'
-```
-
-**Axios**
-
-```js
-const { data } = await api.post('/start', {
-    args: ['/app/dist/index.js', '--example-flag']
-})
-console.log(data)
-```
-
-The `args` array replaces the configured/default argument array; it is not
-appended to it. Every element must be a string.
 
 #### Add per-run environment variables
 
@@ -1414,7 +1389,7 @@ Stopping while idle returns `409 Conflict` with code `NOT_RUNNING`.
 ### `POST /restart`
 
 Stops the current run if necessary and then starts a new run. It accepts the
-same `accountIndex`, `excludedAccountIndexes`, `args`, and `env` fields as
+same `accountIndex`, `excludedAccountIndexes`, and `env` fields as
 `/start`, plus `force` for the stop phase.
 
 **cURL**
@@ -2005,7 +1980,7 @@ All variables are optional.
 | -------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
 | `API_HOST`                 | `127.0.0.1`                   | Interface to bind. Use `0.0.0.0` only when remote/container access is required.             |
 | `API_PORT`                 | `3010`                        | HTTP listen port.                                                                           |
-| `API_TOKEN`                | unset                         | Shared token required by every endpoint when configured.                                    |
+| `API_TOKEN`                | unset                         | Shared token required off-loopback; when set, it must contain at least 32 characters.        |
 | `API_CORS_ORIGIN`          | `*`                           | Value returned in `Access-Control-Allow-Origin`.                                            |
 | `API_LOG_BUFFER`           | `2000`                        | Maximum structured log entries kept in memory.                                              |
 | `API_RUN_HISTORY`          | `20`                          | Maximum completed runs kept in memory.                                                      |
@@ -2060,9 +2035,14 @@ This service can start and stop processes, read logs and session metadata,
 delete an account's sessions, and potentially reveal or update configuration.
 Treat it as an administrative API.
 
+Per-request child-process argument overrides are rejected. The bot entry point
+is fixed when the API starts; `API_RUN_COMMAND` and `API_RUN_ARGS` are trusted
+deployment-time settings only.
+
 - Keep `API_HOST=127.0.0.1` when only local applications need access.
 - Always set `API_TOKEN` before binding to `0.0.0.0` or another non-loopback
-  address.
+  address. The server refuses to start otherwise, and rejects tokens shorter
+  than 32 characters.
 - Use a reverse proxy such as Caddy, nginx, or Traefik for TLS when traffic can
   leave the machine.
 - Restrict `API_CORS_ORIGIN` to the actual dashboard origin instead of `*` when

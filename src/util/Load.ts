@@ -4,6 +4,7 @@ import path from 'path'
 import type { Account, AccountProxy, ConfigSaveFingerprint } from '../interface/Account'
 import type { Config } from '../interface/Config'
 import { validateAccounts, validateConfig } from './Validator'
+import { applyTelegramRuntimeConfig } from './TelegramRuntime'
 
 let configCache: Config
 let envLoaded = false
@@ -156,6 +157,7 @@ export function loadAccounts(): Account[] {
 
 export function loadConfig(): Config {
     try {
+        ensureEnvLoaded()
         if (configCache) {
             return configCache
         }
@@ -170,7 +172,7 @@ export function loadConfig(): Config {
         const config = fs.readFileSync(configPath, 'utf-8')
 
         const unverifiedConfig = JSON.parse(config)
-        const configData = validateConfig(unverifiedConfig)
+        const configData = applyTelegramRuntimeConfig(validateConfig(unverifiedConfig))
 
         configCache = configData
 

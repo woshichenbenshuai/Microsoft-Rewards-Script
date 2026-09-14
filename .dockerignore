@@ -5,6 +5,11 @@ dist
 .vscode
 .DS_Store
 sessions/
+config/
+.env
+*.key
+*.pem
+*.bundle
 .dev/
 diagnostics/
 note

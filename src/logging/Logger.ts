@@ -128,6 +128,7 @@ export class Logger {
             }
             if (
                 config.webhook.telegram?.enabled &&
+                !config.webhook.telegram.summaryOnly &&
                 config.webhook.telegram.botToken &&
                 config.webhook.telegram.chatId
             ) {

@@ -20,6 +20,10 @@
         "lint": "eslint .",
         "lint:fix": "eslint . --fix",
         "test:log-parser": "node --test scripts/api/logParser.test.js",
+        "test:api-security": "node --test scripts/api/security.test.js scripts/api/processManager.test.js",
+        "test:telegram": "node --test scripts/telegram/notification.test.js",
+        "telegram:test": "node ./dist/cli/TelegramTest.js",
+        "browser:smoke": "node ./dist/cli/BrowserSmoke.js",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "clear-diagnostics": "rimraf diagnostics",
@@ -62,5 +66,8 @@
         "semver": "^7.8.1",
         "ts-node": "^10.9.2",
         "zod": "^4.4.3"
+    },
+    "overrides": {
+        "adm-zip": "0.6.1"
     }
 }

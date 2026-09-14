@@ -27,10 +27,17 @@ import type { Account } from './interface/Account'
 import HttpClient from './util/Http'
 import { sendDiscord, flushDiscordQueue } from './logging/Discord'
 import { sendNtfy, flushNtfyQueue } from './logging/Ntfy'
-import { sendTelegram, flushTelegramQueue } from './logging/Telegram'
+import {
+    sendTelegram,
+    sendTelegramFatalFailure,
+    sendTelegramRunSummary,
+    flushTelegramQueue
+} from './logging/Telegram'
+import { resolveTelegramRuntimeConfig } from './util/TelegramRuntime'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import type { AppEarnablePoints } from './interface/Points'
+import { TerminalNotificationGate } from './logging/TerminalNotification'
 
 interface ExecutionContext {
     isMobile: boolean
@@ -58,7 +65,12 @@ interface AccountRunResult {
     skippedForBotWarning?: boolean
 }
 
+function runFailureReasons(stats: AccountStats[]): string[] {
+    return stats.filter(stat => !stat.success).map(stat => stat.error || '账号任务未完成')
+}
+
 const executionContext = new AsyncLocalStorage<ExecutionContext>()
+const terminalTelegramNotificationGate = new TerminalNotificationGate()
 
 export function getCurrentContext(): ExecutionContext {
     const context = executionContext.getStore()
@@ -71,6 +83,19 @@ export function getCurrentContext(): ExecutionContext {
 async function flushAllWebhooks(timeoutMs = 5000): Promise<void> {
     await Promise.allSettled([flushDiscordQueue(timeoutMs), flushNtfyQueue(timeoutMs), flushTelegramQueue(timeoutMs)])
     closeSessionStore()
+}
+
+async function notifyFatalFailureOnce(reason: string): Promise<void> {
+    if (!cluster.isPrimary || !terminalTelegramNotificationGate.claim()) return
+
+    try {
+        const telegram = resolveTelegramRuntimeConfig(undefined)
+        if (telegram.enabled && telegram.summaryOnly) await sendTelegramFatalFailure(telegram, reason)
+    } catch (error) {
+        console.warn(
+            `[telegram] Failure alert could not be sent: ${error instanceof Error ? error.message : 'invalid Telegram configuration'}`
+        )
+    }
 }
 
 interface UserData {
@@ -318,7 +343,7 @@ export class MicrosoftRewardsBot {
                         sendNtfy(webhook.ntfy, content, level)
                     }
                     if (webhook.telegram?.enabled && webhook.telegram.botToken && webhook.telegram.chatId) {
-                        sendTelegram(webhook.telegram, content, level)
+                        if (!webhook.telegram.summaryOnly) sendTelegram(webhook.telegram, content, level)
                     }
                 }
             })
@@ -358,6 +383,25 @@ export class MicrosoftRewardsBot {
                     'green'
                 )
 
+                if (this.config.webhook.telegram?.summaryOnly && terminalTelegramNotificationGate.claim()) {
+                    const successfulStats = allAccountStats.filter(stat => stat.success)
+                    const successfulAccounts = successfulStats.length
+                    await sendTelegramRunSummary(this.config.webhook.telegram, {
+                        expectedAccounts: this.accounts.length,
+                        successfulAccounts,
+                        failedAccounts: this.accounts.length - successfulAccounts,
+                        pointsGained: totalCollectedPoints,
+                        currentBalance: successfulStats.length
+                            ? successfulStats.reduce((sum, stat) => sum + stat.finalPoints, 0)
+                            : null,
+                        runtimeMinutes: totalDurationMinutes,
+                        failureReasons: [
+                            ...runFailureReasons(allAccountStats),
+                            ...(hadWorkerFailure ? ['任务进程异常退出'] : [])
+                        ]
+                    })
+                }
+
                 await flushAllWebhooks()
 
                 process.exit(hadWorkerFailure ? 1 : 0)
@@ -392,7 +436,7 @@ export class MicrosoftRewardsBot {
                 }
 
                 await flushAllWebhooks()
-                process.exit(0)
+                process.exit(stats.every(stat => stat.success) ? 0 : 1)
             } catch (error) {
                 this.logger.error(
                     'main',
@@ -531,8 +575,24 @@ export class MicrosoftRewardsBot {
                 'green'
             )
 
+            const successfulStats = accountStats.filter(stat => stat.success)
+            const successfulAccounts = successfulStats.length
+            if (this.config.webhook.telegram?.summaryOnly && terminalTelegramNotificationGate.claim()) {
+                await sendTelegramRunSummary(this.config.webhook.telegram, {
+                    expectedAccounts: this.accounts.length,
+                    successfulAccounts,
+                    failedAccounts: this.accounts.length - successfulAccounts,
+                    pointsGained: totalCollectedPoints,
+                    currentBalance: successfulStats.length
+                        ? successfulStats.reduce((sum, stat) => sum + stat.finalPoints, 0)
+                        : null,
+                    runtimeMinutes: totalDurationMinutes,
+                    failureReasons: runFailureReasons(accountStats)
+                })
+            }
+
             await flushAllWebhooks()
-            process.exit(0)
+            process.exit(successfulAccounts === this.accounts.length ? 0 : 1)
         }
 
         return accountStats
@@ -995,6 +1055,7 @@ async function main(): Promise<void> {
             return
         }
         rewardsBot.logger.error('main', 'UNCAUGHT-EXCEPTION', error)
+        await notifyFatalFailureOnce(error instanceof Error ? error.message : String(error))
         await flushAllWebhooks()
         process.exit(1)
     })
@@ -1008,6 +1069,7 @@ async function main(): Promise<void> {
             return
         }
         rewardsBot.logger.error('main', 'UNHANDLED-REJECTION', reason as Error)
+        await notifyFatalFailureOnce(reason instanceof Error ? reason.message : String(reason))
         await flushAllWebhooks()
         process.exit(1)
     })
@@ -1017,14 +1079,15 @@ async function main(): Promise<void> {
         await rewardsBot.run()
     } catch (error) {
         rewardsBot.logger.error('main', 'MAIN-ERROR', error as Error)
+        await notifyFatalFailureOnce(error instanceof Error ? error.message : String(error))
         await flushAllWebhooks()
         process.exitCode = 1
     }
 }
 
 main().catch(async error => {
-    const tmpBot = new MicrosoftRewardsBot()
-    tmpBot.logger.error('main', 'MAIN-ERROR', error as Error)
+    console.error('[MAIN-ERROR]', error instanceof Error ? error.message : String(error))
+    await notifyFatalFailureOnce(error instanceof Error ? error.message : String(error))
     await flushAllWebhooks()
     process.exit(1)
 })

@@ -87,7 +87,9 @@
         "telegram": {
             "enabled": false,
             "botToken": "",
-            "chatId": ""
+            "chatId": "",
+            "summaryOnly": false,
+            "proxyUrl": ""
         },
         "ntfy": {
             "enabled": false,

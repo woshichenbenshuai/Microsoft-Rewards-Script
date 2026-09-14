@@ -74,11 +74,6 @@ export const ENV_OVERRIDES: EnvOverrideEntry[] = [
     { env: 'CONFIG_DISCORD_ENABLED', path: 'webhook.discord.enabled', type: 'bool' },
     { env: 'CONFIG_DISCORD_URL', path: 'webhook.discord.url', type: 'string' },
 
-    // Telegram webhook
-    { env: 'CONFIG_TELEGRAM_ENABLED', path: 'webhook.telegram.enabled', type: 'bool' },
-    { env: 'CONFIG_TELEGRAM_BOTTOKEN', path: 'webhook.telegram.botToken', type: 'string' },
-    { env: 'CONFIG_TELEGRAM_CHATID', path: 'webhook.telegram.chatId', type: 'string' },
-
     // ntfy webhook (tags are comma-separated e.g. "bot,notify")
     { env: 'CONFIG_NTFY_ENABLED', path: 'webhook.ntfy.enabled', type: 'bool' },
     { env: 'CONFIG_NTFY_URL', path: 'webhook.ntfy.url', type: 'string' },

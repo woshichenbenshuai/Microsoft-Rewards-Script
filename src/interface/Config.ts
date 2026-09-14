@@ -109,4 +109,6 @@ export interface WebhookTelegramConfig {
     enabled?: boolean
     botToken: string
     chatId: string | number
+    summaryOnly?: boolean
+    proxyUrl?: string
 }
