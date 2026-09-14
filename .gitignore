@@ -1,4 +1,5 @@
 sessions/
+config/
 dist/
 .dev/
 node_modules/
