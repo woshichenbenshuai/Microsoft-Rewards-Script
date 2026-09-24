@@ -14,6 +14,11 @@ import type { AppEarnablePoints, BrowserEarnablePoints } from '../interface/Poin
 import type { AppDashboardData } from '../interface/AppDashBoardData'
 import { detectFlyoutBotWarning, mapFlyoutToDashboard, type RewardsFlyoutData } from './FlyoutDashboard'
 
+const DASHBOARD_MAX_ATTEMPTS = 3
+const DASHBOARD_REQUEST_TIMEOUT_MS = 20000
+const DASHBOARD_RETRY_BASE_DELAY_MS = 1000
+const DASHBOARD_RETRY_MAX_DELAY_MS = 4000
+
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
 
@@ -31,10 +36,8 @@ export default class BrowserFunc {
         delete fingerprintHeaders['cookie']
 
         if (!this.useFlyoutDashboardFallback) {
-            let primaryError: unknown
-
-            for (let attempt = 1; attempt <= 2; attempt++) {
-                try {
+            try {
+                return await this.withDashboardRetry('Primary dashboard', async () => {
                     const response = await this.bot.http.request<DashboardData>({
                         url: URLs.rewards.userInfoApi,
                         method: 'GET',
@@ -44,6 +47,7 @@ export default class BrowserFunc {
                             Referer: URLs.rewards.referer,
                             Origin: URLs.rewards.origin
                         },
+                        timeout: DASHBOARD_REQUEST_TIMEOUT_MS,
                         retries: 0
                     })
 
@@ -51,25 +55,15 @@ export default class BrowserFunc {
 
                     if (response.data?.dashboard) return response.data
                     throw new Error('Dashboard data missing from API response')
-                } catch (error) {
-                    primaryError = error
-                    if (attempt === 1) {
-                        this.bot.logger.warn(
-                            this.bot.isMobile,
-                            'GET-DASHBOARD-DATA',
-                            `Primary dashboard request failed; retrying once | message=${this.errorMessage(error)}`
-                        )
-                        await new Promise(resolve => setTimeout(resolve, 1000))
-                    }
-                }
+                })
+            } catch (primaryError) {
+                this.useFlyoutDashboardFallback = true
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'GET-DASHBOARD-DATA',
+                    `Primary dashboard unavailable after ${DASHBOARD_MAX_ATTEMPTS} attempts; using Bing flyout fallback | message=${this.errorMessage(primaryError)}`
+                )
             }
-
-            this.useFlyoutDashboardFallback = true
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                'GET-DASHBOARD-DATA',
-                `Primary dashboard unavailable after one retry; using Bing flyout fallback | message=${this.errorMessage(primaryError)}`
-            )
         }
 
         return await this.getFlyoutDashboardData(cookies, fingerprintHeaders)
@@ -80,28 +74,32 @@ export default class BrowserFunc {
         fingerprintHeaders: Record<string, string>
     ): Promise<DashboardData> {
         try {
-            const response = await this.bot.http.request<RewardsFlyoutData>({
-                url: URLs.bing.rewardsFlyoutUserInfo,
-                method: 'GET',
-                headers: {
-                    ...fingerprintHeaders,
-                    Accept: 'application/json',
-                    Cookie: this.buildCookieHeader(this.getCachedCookies(cookies, URLs.bing.rewardsFlyoutUserInfo)),
-                    Referer: `${URLs.bing.origin}/`,
-                    Origin: URLs.bing.origin
-                },
-                retries: 0
+            return await this.withDashboardRetry('Bing flyout dashboard', async () => {
+                const response = await this.bot.http.request<RewardsFlyoutData>({
+                    url: URLs.bing.rewardsFlyoutUserInfo,
+                    method: 'GET',
+                    headers: {
+                        ...fingerprintHeaders,
+                        Accept: 'application/json',
+                        Cookie: this.buildCookieHeader(this.getCachedCookies(cookies, URLs.bing.rewardsFlyoutUserInfo)),
+                        Referer: `${URLs.bing.origin}/`,
+                        Origin: URLs.bing.origin
+                    },
+                    timeout: DASHBOARD_REQUEST_TIMEOUT_MS,
+                    retries: 0
+                })
+
+                await this.applyResponseCookies(URLs.bing.rewardsFlyoutUserInfo, response.headers['set-cookie'])
+
+                const detection = detectFlyoutBotWarning(response.data)
+                const dashboard = mapFlyoutToDashboard(response.data)
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'GET-DASHBOARD-DATA',
+                    `Using partial Bing flyout dashboard | suspectedLimited=${detection.likelyLimited} | botMarkers=${detection.hasBotProfileMarkers} | activitiesCollapsed=${detection.hasCollapsedActivities}`
+                )
+                return dashboard
             })
-
-            await this.applyResponseCookies(URLs.bing.rewardsFlyoutUserInfo, response.headers['set-cookie'])
-
-            const detection = detectFlyoutBotWarning(response.data)
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                'GET-DASHBOARD-DATA',
-                `Using partial Bing flyout dashboard | suspectedLimited=${detection.likelyLimited} | botMarkers=${detection.hasBotProfileMarkers} | activitiesCollapsed=${detection.hasCollapsedActivities}`
-            )
-            return mapFlyoutToDashboard(response.data)
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
@@ -110,6 +108,39 @@ export default class BrowserFunc {
             )
             throw error
         }
+    }
+
+    private async withDashboardRetry<T>(endpoint: string, operation: () => Promise<T>): Promise<T> {
+        let lastError: unknown
+
+        for (let attempt = 1; attempt <= DASHBOARD_MAX_ATTEMPTS; attempt++) {
+            try {
+                const result = await operation()
+                if (attempt > 1) {
+                    this.bot.logger.info(
+                        this.bot.isMobile,
+                        'GET-DASHBOARD-DATA',
+                        `${endpoint} recovered on attempt ${attempt}/${DASHBOARD_MAX_ATTEMPTS}`
+                    )
+                }
+                return result
+            } catch (error) {
+                lastError = error
+                if (attempt >= DASHBOARD_MAX_ATTEMPTS) break
+
+                const delay =
+                    Math.min(DASHBOARD_RETRY_MAX_DELAY_MS, DASHBOARD_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)) +
+                    Math.floor(Math.random() * 250)
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'GET-DASHBOARD-DATA',
+                    `${endpoint} request failed; retrying ${attempt + 1}/${DASHBOARD_MAX_ATTEMPTS} after ${delay}ms | message=${this.errorMessage(error)}`
+                )
+                await this.bot.utils.wait(delay)
+            }
+        }
+
+        throw lastError instanceof Error ? lastError : new Error(String(lastError))
     }
 
     private errorMessage(error: unknown): string {
