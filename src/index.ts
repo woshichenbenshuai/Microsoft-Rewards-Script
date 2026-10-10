@@ -32,10 +32,13 @@ import { resolveTelegramRuntimeConfig } from './util/TelegramRuntime'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import type { AppEarnablePoints } from './interface/Points'
+import { initializeRunHistory } from './util/RunHistory'
+import { summarizeAccountRuns } from './util/AccountRunSummary'
 import { TerminalNotificationGate } from './logging/TerminalNotification'
 import { snapshotAccountBalance, totalKnownFinalBalance } from './util/RunStats'
 import {
     claimDailyRun,
+    getSafetyState,
     classifyImmediateSafetySignal,
     isLoginFailureReason,
     recordRunOutcome
@@ -78,6 +81,8 @@ function runFailureReasons(stats: AccountStats[]): string[] {
 const executionContext = new AsyncLocalStorage<ExecutionContext>()
 const terminalTelegramNotificationGate = new TerminalNotificationGate()
 let primaryRunClaimed = false
+let primaryRunDate: string | undefined
+let primaryAccountEmails: string[] = []
 
 export function getCurrentContext(): ExecutionContext {
     const context = executionContext.getStore()
@@ -97,7 +102,21 @@ async function notifyFatalFailureOnce(reason: string): Promise<void> {
 
     try {
         const telegram = resolveTelegramRuntimeConfig(undefined)
-        if (telegram.enabled && telegram.summaryOnly) await sendTelegramFatalFailure(telegram, reason)
+        if (telegram.enabled && telegram.summaryOnly) {
+            if (primaryAccountEmails.length && primaryRunDate) {
+                const accounts = await summarizeAccountRuns(primaryAccountEmails, [], { date: primaryRunDate })
+                for (const account of accounts) account.failureReason = reason
+                await sendTelegramRunSummary(telegram, {
+                    accounts,
+                    expectedAccounts: accounts.length,
+                    successfulAccounts: 0,
+                    failedAccounts: accounts.length,
+                    pointsGained: 0,
+                    currentBalance: null,
+                    runtimeMinutes: '未知'
+                })
+            } else await sendTelegramFatalFailure(telegram, reason)
+        }
     } catch (error) {
         console.warn(
             `[telegram] Failure alert could not be sent: ${error instanceof Error ? error.message : 'invalid Telegram configuration'}`
@@ -383,7 +402,10 @@ export class MicrosoftRewardsBot {
                     if (webhook.ntfy?.enabled && webhook.ntfy.url) {
                         sendNtfy(webhook.ntfy, content, level)
                     }
-                    if (webhook.telegram?.enabled && webhook.telegram.botToken && webhook.telegram.chatId) {
+                    if (
+                        webhook.telegram?.enabled &&
+                        (webhook.telegram.relayUrl || (webhook.telegram.botToken && webhook.telegram.chatId))
+                    ) {
                         if (!webhook.telegram.summaryOnly) sendTelegram(webhook.telegram, content, level)
                     }
                 }
@@ -424,6 +446,12 @@ export class MicrosoftRewardsBot {
                     runSucceeded ? 'success' : 'failed'
                 )
 
+                const accounts = await summarizeAccountRuns(
+                    this.accounts.map(account => account.email),
+                    allAccountStats,
+                    { date: primaryRunDate }
+                )
+
                 if (safetyOutcome?.circuitJustOpened) {
                     this.logger.warn(
                         'main',
@@ -441,6 +469,7 @@ export class MicrosoftRewardsBot {
 
                 if (this.config.webhook.telegram?.summaryOnly && terminalTelegramNotificationGate.claim()) {
                     await sendTelegramRunSummary(this.config.webhook.telegram, {
+                        accounts,
                         expectedAccounts: this.accounts.length,
                         successfulAccounts,
                         failedAccounts: this.accounts.length - successfulAccounts,
@@ -644,6 +673,11 @@ export class MicrosoftRewardsBot {
             const successfulAccounts = successfulStats.length
             const runSucceeded = successfulAccounts === this.accounts.length
             const safetyOutcome = await finalizePrimarySafetyState(accountStats, runSucceeded ? 'success' : 'failed')
+            const summaries = await summarizeAccountRuns(
+                this.accounts.map(account => account.email),
+                accountStats,
+                { date: primaryRunDate }
+            )
 
             if (safetyOutcome?.circuitJustOpened) {
                 this.logger.warn(
@@ -655,6 +689,7 @@ export class MicrosoftRewardsBot {
 
             if (this.config.webhook.telegram?.summaryOnly && terminalTelegramNotificationGate.claim()) {
                 await sendTelegramRunSummary(this.config.webhook.telegram, {
+                    accounts: summaries,
                     expectedAccounts: this.accounts.length,
                     successfulAccounts,
                     failedAccounts: this.accounts.length - successfulAccounts,
@@ -1134,6 +1169,13 @@ async function main(): Promise<void> {
     checkNodeVersion()
 
     if (cluster.isPrimary) {
+        primaryAccountEmails = loadAccounts().map(account => account.email)
+        const previousSafety = await getSafetyState()
+        await initializeRunHistory(primaryAccountEmails, previousSafety.lastRun, {
+            timeZone: previousSafety.timeZone
+        }).catch(() => {
+            console.warn('[run-history] Could not initialize statistics; existing records were not reset.')
+        })
         const decision = await claimDailyRun()
         if (!decision.allowed) {
             if (decision.reason === 'already_ran_today') {
@@ -1145,6 +1187,7 @@ async function main(): Promise<void> {
             }
             return
         }
+        primaryRunDate = decision.date
         primaryRunClaimed = true
         console.log(`[safety] Claimed daily run for ${decision.date}`)
     }

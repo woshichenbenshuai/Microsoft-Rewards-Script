@@ -111,4 +111,7 @@ export interface WebhookTelegramConfig {
     chatId: string | number
     summaryOnly?: boolean
     proxyUrl?: string
+    relayUrl?: string
+    relayToken?: string
+    sourceLabel?: string
 }

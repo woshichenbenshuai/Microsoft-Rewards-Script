@@ -1,0 +1,16 @@
+# Use together with compose.yaml; the home deployment keeps its own settings.
+services:
+    microsoft-rewards-script:
+        build:
+            dockerfile: Dockerfile.huawei
+        image: 'microsoft-rewards-script:${IMAGE_TAG:-4.3.2-huawei-cloud}'
+        mem_limit: 1024m
+        # Total RAM + swap allowance. Requires swap on the host.
+        memswap_limit: 2048m
+        cpus: 1.0
+        shm_size: 256m
+        environment:
+            CONFIG_SEARCH_PARALLEL: 'false'
+            # Avoid unavailable external topic sources on mainland egress.
+            CONFIG_SEARCH_QUERY_ENGINES: 'local'
+            # Telegram credentials and optional proxy are loaded from .env.

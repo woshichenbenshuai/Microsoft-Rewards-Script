@@ -11,7 +11,20 @@ const telegramQueue = new PQueue({
     carryoverConcurrencyCount: true
 })
 
+export interface TelegramAccountSummary {
+    email: string
+    success: boolean
+    consecutiveSuccessfulDays: number | null
+    totalSuccessfulDays: number | null
+    pointsGained: number
+    previousBalance: number | null
+    currentBalance: number | null
+    runtimeMinutes: number | string
+    failureReason?: string
+}
+
 export interface TelegramRunSummary {
+    accounts?: TelegramAccountSummary[]
     expectedAccounts: number
     successfulAccounts: number
     failedAccounts: number
@@ -67,6 +80,34 @@ function localCompletionTime(date: Date, timeZone: string): string {
 }
 
 export function formatTelegramRunSummary(summary: TelegramRunSummary): string {
+    if (summary.accounts?.length) {
+        return summary.accounts
+            .map(account => {
+                const lines = [
+                    account.success ? '✅ Microsoft Rewards 任务完成' : '❌ Microsoft Rewards 任务未完整完成',
+                    '',
+                    `账号：${account.email}`,
+                    `连续成功：${account.consecutiveSuccessfulDays ?? '未知'} 天`,
+                    `累计成功：${account.totalSuccessfulDays ?? '未知'} 天`,
+                    '',
+                    `本次获得：${account.pointsGained} 分`,
+                    `积分变化：${account.previousBalance ?? '未知'} → ${account.currentBalance ?? '未知'}`,
+                    `耗时：${account.runtimeMinutes} 分钟`,
+                    `完成时间：${localCompletionTime(summary.completedAt ?? new Date(), summary.timeZone || process.env.TZ || 'Asia/Shanghai')}`
+                ]
+                if (!account.success) lines.push(`失败原因：${safeReason(account.failureReason ?? '账号任务未完成')}`)
+                if (account.consecutiveSuccessfulDays === null || account.totalSuccessfulDays === null)
+                    lines.push('统计状态：记录读取或保存失败，请检查 run-history.json')
+                if (summary.safetyPaused)
+                    lines.push(
+                        '状态：风控熔断已开启，后续定时任务已暂停',
+                        `熔断原因：${safeReason(summary.safetyReason ?? '需要人工检查')}`,
+                        '恢复方式：检查账号后执行 npm run safety:reset'
+                    )
+                return lines.join('\n')
+            })
+            .join('\n\n')
+    }
     const complete = summary.failedAccounts === 0 && summary.successfulAccounts === summary.expectedAccounts
     const heading = summary.safetyPaused
         ? '⚠️ Microsoft Rewards 风控熔断已开启'
@@ -111,20 +152,26 @@ async function deliverTelegram(
     text: string,
     options: { parseMode?: 'MarkdownV2'; silent?: boolean; throwOnError?: boolean } = {}
 ): Promise<boolean> {
-    if (!config.enabled || !config.botToken || !config.chatId) return false
+    if (!config.enabled || (!config.relayUrl && (!config.botToken || !config.chatId))) return false
+    if (config.relayUrl && !config.relayToken) return false
 
-    const url = `https://api.telegram.org/bot${config.botToken}/sendMessage`
+    const url = config.relayUrl ?? `https://api.telegram.org/bot${config.botToken}/sendMessage`
     const data: Record<string, unknown> = {
-        chat_id: config.chatId,
-        text,
+        text: config.sourceLabel ? `${config.sourceLabel}\n${text}` : text,
         disable_notification: Boolean(options.silent)
     }
+    if (!config.relayUrl) data.chat_id = config.chatId
     if (options.parseMode) data.parse_mode = options.parseMode
 
     const request: HttpRequestConfig = {
         method: 'POST',
         url,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            ...(config.relayUrl
+                ? { Authorization: `Bearer ${config.relayToken}`, 'User-Agent': 'Microsoft-Rewards-Notification/4.3.2' }
+                : {})
+        },
         data,
         timeout: 10000,
         retries: 2,
@@ -133,7 +180,8 @@ async function deliverTelegram(
 
     const result = await telegramQueue.add(async () => {
         try {
-            await httpRequest(request)
+            const response = await httpRequest<{ ok?: boolean }>(request)
+            if (response.data?.ok !== true) throw new Error('Telegram response did not confirm delivery.')
             return true
         } catch (error) {
             const status =
@@ -162,7 +210,25 @@ export function sendTelegram(config: WebhookTelegramConfig, content: string, lev
     return deliverTelegram(config, message, { parseMode: 'MarkdownV2', silent: level === 'debug' })
 }
 
-export function sendTelegramRunSummary(config: WebhookTelegramConfig, summary: TelegramRunSummary): Promise<boolean> {
+export async function sendTelegramRunSummary(
+    config: WebhookTelegramConfig,
+    summary: TelegramRunSummary
+): Promise<boolean> {
+    // Send one message per account so large deployments do not exceed Telegram's text limit.
+    if (summary.accounts?.length) {
+        let delivered = true
+        const completedAt = summary.completedAt ?? new Date()
+        for (const account of summary.accounts) {
+            if (
+                !(await deliverTelegram(
+                    config,
+                    formatTelegramRunSummary({ ...summary, completedAt, accounts: [account] })
+                ))
+            )
+                delivered = false
+        }
+        return delivered
+    }
     return deliverTelegram(config, formatTelegramRunSummary(summary))
 }
 

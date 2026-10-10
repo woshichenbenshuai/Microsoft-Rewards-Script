@@ -11,3 +11,5 @@ note
 .playwright-chromium-installed
 .stfolder/
 .env
+
+.deploy/

@@ -125,3 +125,94 @@ test('does not persist Telegram secrets through config overrides', () => {
     assert.equal(overrideNames.has('CONFIG_TELEGRAM_CHATID'), false)
     assert.equal(overrideNames.has('CONFIG_TELEGRAM_PROXY_URL'), false)
 })
+
+test('relay configuration works without cloud Telegram credentials and rejects insecure or incomplete settings', () => {
+    const config = resolveTelegramRuntimeConfig(undefined, {
+        CONFIG_TELEGRAM_ENABLED: 'true',
+        CONFIG_TELEGRAM_RELAY_URL: 'https://relay.example.com/notify',
+        CONFIG_TELEGRAM_RELAY_TOKEN: 'runtime-relay-key'
+    })
+    assert.equal(config.relayUrl, 'https://relay.example.com/notify')
+    assert.equal(config.relayToken, 'runtime-relay-key')
+    assert.equal(config.botToken, '')
+    assert.throws(
+        () =>
+            resolveTelegramRuntimeConfig(undefined, { CONFIG_TELEGRAM_RELAY_URL: 'https://relay.example.com/notify' }),
+        /configured together/
+    )
+    for (const url of [
+        'http://relay.example.com/notify',
+        'https://user:pass@relay.example.com/notify',
+        'https://relay.example.com/notify?key=secret'
+    ]) {
+        assert.throws(
+            () =>
+                resolveTelegramRuntimeConfig(undefined, {
+                    CONFIG_TELEGRAM_RELAY_URL: url,
+                    CONFIG_TELEGRAM_RELAY_TOKEN: 'key'
+                }),
+            /HTTPS/
+        )
+    }
+    const names = new Set(ENV_OVERRIDES.map(item => item.env))
+    assert.equal(names.has('CONFIG_TELEGRAM_RELAY_TOKEN'), false)
+})
+
+test('account summary includes full email, program success days and before/after balance', () => {
+    const message = formatTelegramRunSummary({
+        expectedAccounts: 1,
+        successfulAccounts: 1,
+        failedAccounts: 0,
+        pointsGained: 320,
+        currentBalance: 370,
+        runtimeMinutes: 16,
+        accounts: [
+            {
+                email: 'full.account@example.com',
+                success: true,
+                consecutiveSuccessfulDays: 3,
+                totalSuccessfulDays: 8,
+                pointsGained: 320,
+                previousBalance: 50,
+                currentBalance: 370,
+                runtimeMinutes: 16
+            }
+        ]
+    })
+    for (const text of [
+        '账号：full.account@example.com',
+        '连续成功：3 天',
+        '累计成功：8 天',
+        '本次获得：320 分',
+        '积分变化：50 → 370',
+        '耗时：16 分钟'
+    ])
+        assert.ok(message.includes(text))
+})
+test('failed account shows preserved points and distinguishes unknown statistics from zero', () => {
+    const message = formatTelegramRunSummary({
+        expectedAccounts: 1,
+        successfulAccounts: 0,
+        failedAccounts: 1,
+        pointsGained: 20,
+        currentBalance: 70,
+        runtimeMinutes: 4,
+        accounts: [
+            {
+                email: 'full.account@example.com',
+                success: false,
+                consecutiveSuccessfulDays: null,
+                totalSuccessfulDays: null,
+                pointsGained: 20,
+                previousBalance: 50,
+                currentBalance: 70,
+                runtimeMinutes: 4,
+                failureReason: 'Login failed bot123456:ABC_secret'
+            }
+        ]
+    })
+    assert.match(message, /连续成功：未知/)
+    assert.match(message, /失败原因：Login failed/)
+    assert.match(message, /积分变化：50 → 70/)
+    assert.doesNotMatch(message, /ABC_secret/)
+})

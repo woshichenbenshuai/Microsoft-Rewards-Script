@@ -34,7 +34,11 @@
         "clear-diagnostics": "rimraf diagnostics",
         "clear-sessions": "node ./scripts/main/clearSessions.js",
         "manual-login": "node ./scripts/main/manualLogin.js",
-        "open-session": "node ./scripts/main/browserSession.js -email"
+        "open-session": "node ./scripts/main/browserSession.js -email",
+        "test:run-history": "node --test scripts/safety/run-history.test.js",
+        "test:telegram-relay": "node --test scripts/cloudflare/telegram-relay.test.mjs",
+        "run-history:init": "node ./dist/cli/RunHistoryControl.js init",
+        "run-history:status": "node ./dist/cli/RunHistoryControl.js status"
     },
     "keywords": [
         "Bing Rewards",

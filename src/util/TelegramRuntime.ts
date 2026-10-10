@@ -43,11 +43,39 @@ export function resolveTelegramRuntimeConfig(
     const chatId = envValue(env, 'CONFIG_TELEGRAM_CHATID') ?? ''
     const proxyUrl = normalizeTelegramProxyUrl(envValue(env, 'CONFIG_TELEGRAM_PROXY_URL'))
 
-    if (enabled && (!botToken || !chatId)) {
+    const relayUrl = envValue(env, 'CONFIG_TELEGRAM_RELAY_URL')
+    const relayToken = envValue(env, 'CONFIG_TELEGRAM_RELAY_TOKEN')
+    if (Boolean(relayUrl) !== Boolean(relayToken)) {
+        throw new Error('CONFIG_TELEGRAM_RELAY_URL and CONFIG_TELEGRAM_RELAY_TOKEN must be configured together.')
+    }
+    if (relayUrl) {
+        let parsed: URL
+        try {
+            parsed = new URL(relayUrl)
+        } catch {
+            throw new Error('CONFIG_TELEGRAM_RELAY_URL must be a valid HTTPS URL.')
+        }
+        if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+            throw new Error(
+                'CONFIG_TELEGRAM_RELAY_URL must use HTTPS without credentials, query parameters, or fragments.'
+            )
+        }
+    }
+
+    if (enabled && !relayUrl && (!botToken || !chatId)) {
         throw new Error('Telegram is enabled but CONFIG_TELEGRAM_BOTTOKEN or CONFIG_TELEGRAM_CHATID is missing.')
     }
 
-    return { enabled, botToken, chatId, summaryOnly, proxyUrl }
+    return {
+        enabled,
+        botToken,
+        chatId,
+        summaryOnly,
+        proxyUrl,
+        relayUrl,
+        relayToken,
+        sourceLabel: envValue(env, 'CONFIG_TELEGRAM_SOURCE_LABEL')?.slice(0, 80)
+    }
 }
 
 export function applyTelegramRuntimeConfig(config: Config, env: NodeJS.ProcessEnv = process.env): Config {
