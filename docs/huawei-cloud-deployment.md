@@ -70,3 +70,5 @@ docker compose -f compose.yaml -f compose.huawei.yaml exec -T microsoft-rewards-
 云端 `MAX_RUN_MINUTES=120`，实际程序运行超过两小时后，调度脚本使用 GNU timeout 向整个任务进程组发送 TERM，30 秒后仍未退出则强制结束。随机等待时间不包含在两小时内。超时后保存未完成状态并通过既有 TG 通道告警；不清除每日标记、不增加成功天数，也不自动重跑。该保护适用于默认调度模式（API_MODE=false），并使用独立进程计时，浏览器 RPC 卡住也会生效。未配置该变量的普通部署默认上限为 480 分钟，与原有过期锁阈值一致。
 
 Bing 搜索页面导航显式等待 DOMContentLoaded，最多等待 30 秒，避免等待网页全部资源加载完成。整次任务的超时保护仍作为浏览器接口异常挂起时的兜底。
+
+华为云构建使用 BuildKit 缓存保存 Patchright 浏览器下载；缓存按浏览器版本目录区分，首次下载后可复用。运行镜像内仍包含独立浏览器文件，容器运行不依赖构建缓存。

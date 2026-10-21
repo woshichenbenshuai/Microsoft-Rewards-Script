@@ -88,8 +88,11 @@ COPY --from=builder /usr/src/microsoft-rewards-script/node_modules ./node_module
 
 # Install patchright's stealth-patched Chromium headless shell.
 # The container is headless-only so the full browser isn't needed; then clean up
-RUN set -eux; \
-    npx patchright install --with-deps --only-shell chromium; \
+RUN --mount=type=cache,id=rewards-patchright-browsers,target=/tmp/rewards-browser-cache,sharing=locked \
+    set -eux; \
+    PLAYWRIGHT_BROWSERS_PATH=/tmp/rewards-browser-cache npx patchright install --with-deps --only-shell chromium; \
+    mkdir -p node_modules/patchright-core/.local-browsers; \
+    cp -a /tmp/rewards-browser-cache/. node_modules/patchright-core/.local-browsers/; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # Copy config example into the image so entrypoint can use it as a fallback
