@@ -10,6 +10,8 @@ services:
         cpus: 1.0
         shm_size: 256m
         environment:
+            # Stop hung browser tasks and send a failure alert after two hours.
+            MAX_RUN_MINUTES: '120'
             CONFIG_SEARCH_PARALLEL: 'false'
             # Avoid unavailable external topic sources on mainland egress.
             CONFIG_SEARCH_QUERY_ENGINES: 'local'

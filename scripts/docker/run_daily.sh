@@ -210,6 +210,14 @@ else
     echo "[$(date)] [run_daily.sh] Skipping random sleep"
 fi
 
+# Enforce a deadline in a separate process, even when a browser RPC never returns.
+# Default matches the existing 8-hour stale-process threshold; cloud overrides to 2h.
+MAX_RUN_MINUTES=${MAX_RUN_MINUTES:-480}
+if ! is_positive_integer "$MAX_RUN_MINUTES"; then
+    echo "[$(date)] [run_daily.sh] ERROR: MAX_RUN_MINUTES must be a positive integer." >&2
+    exit 1
+fi
+
 # Start the actual script
 echo "[$(date)] [run_daily.sh] Starting script..."
 run_status=0
@@ -221,10 +229,18 @@ if [ "${API_MODE:-false}" = "true" ]; then
         run_status=1
     fi
 else
-    if npm start; then
+    if timeout --signal=TERM --kill-after=30s "${MAX_RUN_MINUTES}m" npm start; then
         echo "[$(date)] [run_daily.sh] Script completed successfully."
     else
-        echo "[$(date)] [run_daily.sh] ERROR: Script failed!" >&2
+        script_status=$?
+        if [ "$script_status" -eq 124 ] || [ "$script_status" -eq 137 ]; then
+            echo "[$(date)] [run_daily.sh] ERROR: Script exceeded ${MAX_RUN_MINUTES} minutes; process group stopped." >&2
+            timeout --signal=TERM --kill-after=5s 60s node dist/cli/TaskTimeout.js "$MAX_RUN_MINUTES" || {
+                echo "[$(date)] [run_daily.sh] ERROR: Timeout alert or state finalization failed." >&2
+            }
+        else
+            echo "[$(date)] [run_daily.sh] ERROR: Script failed (exit ${script_status})!" >&2
+        fi
         run_status=1
     fi
 fi

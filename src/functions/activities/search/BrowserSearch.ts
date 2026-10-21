@@ -50,7 +50,7 @@ export class Search extends BaseActivity {
             )
             return stats.totalGained
         } finally {
-            await page.goto(URLs.bing.origin).catch(() => {})
+            await page.goto(URLs.bing.origin, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
         }
     }
 
@@ -102,7 +102,7 @@ export class Search extends BaseActivity {
             )
 
             await this.bot.browser.func.synchronizeActiveBrowserCookies('SEARCH-COOKIE-SEED', true)
-            await page.goto(URLs.bing.origin)
+            await page.goto(URLs.bing.origin, { waitUntil: 'domcontentloaded', timeout: 30000 })
             await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
             await this.bot.browser.utils.tryDismissAllMessages(page)
 
@@ -152,7 +152,7 @@ export class Search extends BaseActivity {
         this.searchCount++
 
         if (this.searchCount % REFRESH_EVERY === 0) {
-            await page.goto(URLs.bing.origin)
+            await page.goto(URLs.bing.origin, { waitUntil: 'domcontentloaded', timeout: 30000 })
             await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
             await this.bot.browser.utils.tryDismissAllMessages(page)
         }
@@ -224,7 +224,7 @@ export class Search extends BaseActivity {
             await this.bot.utils.wait(this.bot.config.searchSettings.searchResultVisitTime)
 
             if (isMobile) {
-                await page.goto(searchPageUrl)
+                await page.goto(searchPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
             } else {
                 const newTab = await this.bot.browser.utils.getLatestTab(page)
                 await this.bot.browser.utils.closeTabs(newTab)
