@@ -72,3 +72,5 @@ docker compose -f compose.yaml -f compose.huawei.yaml exec -T microsoft-rewards-
 Bing 搜索页面导航显式等待 DOMContentLoaded，最多等待 30 秒，避免等待网页全部资源加载完成。整次任务的超时保护仍作为浏览器接口异常挂起时的兜底。
 
 华为云构建使用 BuildKit 缓存保存 Patchright 浏览器下载；缓存按浏览器版本目录区分，首次下载后可复用。运行镜像内仍包含独立浏览器文件，容器运行不依赖构建缓存。
+
+弹窗探测使用带 1 秒截止时间的选择器等待，避免 Patchright 的 `isVisible()` 在 Bing 页面上下文异常时无限等待。弹窗按钮按顺序关闭，按钮消失后停止点击；覆盖层检查同样有截止时间。两小时的进程级保护继续保留。

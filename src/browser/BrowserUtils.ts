@@ -29,12 +29,15 @@ export default class BrowserUtils {
                 { selector: '#reward_pivot_earn', label: 'Reward Coupon Accept' }
             ]
 
+            // Patchright's isVisible() can wait indefinitely for a page execution context.
+            // Use a selector wait with a real deadline, including for optional banners.
             const checkVisible = await Promise.allSettled(
                 buttons.map(async b => ({
                     ...b,
                     isVisible: await page
                         .locator(b.selector)
-                        .isVisible()
+                        .waitFor({ state: 'visible', timeout: 1000 })
+                        .then(() => true)
                         .catch(() => false)
                 }))
             )
@@ -45,24 +48,23 @@ export default class BrowserUtils {
                 .filter(Boolean)
 
             if (visibleButtons.length > 0) {
-                await Promise.allSettled(
-                    visibleButtons.map(async b => {
-                        if (b) {
-                            const clicked = await this.ghostClick(page, b.selector)
-                            if (clicked) {
-                                this.bot.logger.debug(
-                                    this.bot.isMobile,
-                                    'DISMISS-ALL-MESSAGES',
-                                    `Dismissed: ${b.label}`
-                                )
-                            }
-                        }
-                    })
-                )
+                // One dismissal can navigate or remove another button. Recheck each target
+                // during ghostClick instead of starting competing clicks on a stale snapshot.
+                for (const b of visibleButtons) {
+                    if (!b) continue
+                    const clicked = await this.ghostClick(page, b.selector)
+                    if (clicked) {
+                        this.bot.logger.debug(this.bot.isMobile, 'DISMISS-ALL-MESSAGES', `Dismissed: ${b.label}`)
+                    }
+                }
                 await this.bot.utils.wait(300)
             }
 
-            const overlay = await page.$('#bnp_overlay_wrapper')
+            const overlay = await page
+                .locator('#bnp_overlay_wrapper')
+                .waitFor({ state: 'attached', timeout: 1000 })
+                .then(() => true)
+                .catch(() => false)
             if (overlay) {
                 const rejected = await this.ghostClick(page, '#bnp_btn_reject, button[aria-label*="Reject" i]')
                 if (rejected) {
@@ -208,11 +210,13 @@ export default class BrowserUtils {
                 `Trying to click selector: ${selector}, options: ${JSON.stringify(options)}`
             )
 
-            await page.waitForSelector(selector, { timeout: 1000 }).catch(() => {})
+            // Stop here if a previous click removed the target. Calling the cursor anyway
+            // falls back to another unbounded element lookup inside the cursor library.
+            await page.waitForSelector(selector, { state: 'visible', timeout: 1000 })
 
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const cursor = createCursor(page as any)
-            await cursor.click(selector, options)
+            await cursor.click(selector, { ...options, waitForSelector: 1000 })
 
             return true
         } catch (error) {

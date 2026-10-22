@@ -39,7 +39,8 @@
         "test:telegram-relay": "node --test scripts/cloudflare/telegram-relay.test.mjs",
         "run-history:init": "node ./dist/cli/RunHistoryControl.js init",
         "run-history:status": "node ./dist/cli/RunHistoryControl.js status",
-        "test:task-timeout": "node --test scripts/docker/task-timeout.test.js"
+        "test:task-timeout": "node --test scripts/docker/task-timeout.test.js",
+        "test:browser-popup": "node --test scripts/browser/popup.test.js"
     },
     "keywords": [
         "Bing Rewards",
