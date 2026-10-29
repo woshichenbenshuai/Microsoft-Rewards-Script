@@ -34,7 +34,19 @@ function fixture(clickResults = [true]) {
             assert.equal(options.timeout, 10000)
             calls.push('scroll')
         },
-        fill: async () => calls.push('fill')
+        fill: async (_text, options) => {
+            assert.equal(options.timeout, 10000)
+            calls.push('fill')
+        },
+        pressSequentially: async (_query, options) => {
+            assert.equal(options.timeout, 30000)
+            calls.push('type')
+        },
+        press: async (key, options) => {
+            assert.equal(key, 'Enter')
+            assert.equal(options.timeout, 10000)
+            calls.push('submit')
+        }
     }
     const page = {
         evaluate: () => {
@@ -47,10 +59,11 @@ function fixture(clickResults = [true]) {
         },
         waitForLoadState: async () => {},
         keyboard: {
-            type: async () => calls.push('type'),
-            press: async key => {
-                assert.equal(key, 'Enter')
-                calls.push('submit')
+            type: () => {
+                throw Error('Unbounded keyboard API entered')
+            },
+            press: () => {
+                throw Error('Unbounded keyboard API entered')
             }
         }
     }

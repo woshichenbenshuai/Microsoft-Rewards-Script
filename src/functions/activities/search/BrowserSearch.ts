@@ -170,10 +170,13 @@ export class Search extends BaseActivity {
                 if (!(await this.bot.browser.utils.ghostClick(page, SEARCH_BOX, { clickCount: 3 }))) {
                     throw new Error('Search input click failed')
                 }
-                await searchBox.fill('')
+                await searchBox.fill('', { timeout: 10000 })
 
-                await page.keyboard.type(query, { delay: this.bot.utils.randomDelay(45, 90) })
-                await page.keyboard.press('Enter')
+                await searchBox.pressSequentially(query, {
+                    delay: this.bot.utils.randomDelay(45, 90),
+                    timeout: 30000
+                })
+                await searchBox.press('Enter', { timeout: 10000 })
                 await this.bot.utils.wait(3000)
 
                 if (this.bot.config.searchSettings.scrollRandomResults) {
