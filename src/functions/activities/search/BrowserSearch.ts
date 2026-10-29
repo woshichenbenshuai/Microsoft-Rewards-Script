@@ -161,12 +161,15 @@ export class Search extends BaseActivity {
             try {
                 const searchBox = page.locator(SEARCH_BOX)
 
-                await page.evaluate(() => window.scrollTo({ left: 0, top: 0, behavior: 'auto' }))
-                await page.keyboard.press('Home')
                 await searchBox.waitFor({ state: 'visible', timeout: 15000 })
+                // page.evaluate() has no action deadline and can stall on a busy
+                // renderer. Scroll via a cancellable element action instead.
+                await searchBox.scrollIntoViewIfNeeded({ timeout: 10000 })
 
                 await this.bot.utils.wait(1000)
-                await this.bot.browser.utils.ghostClick(page, SEARCH_BOX, { clickCount: 3 })
+                if (!(await this.bot.browser.utils.ghostClick(page, SEARCH_BOX, { clickCount: 3 }))) {
+                    throw new Error('Search input click failed')
+                }
                 await searchBox.fill('')
 
                 await page.keyboard.type(query, { delay: this.bot.utils.randomDelay(45, 90) })

@@ -40,7 +40,9 @@
         "run-history:init": "node ./dist/cli/RunHistoryControl.js init",
         "run-history:status": "node ./dist/cli/RunHistoryControl.js status",
         "test:task-timeout": "node --test scripts/docker/task-timeout.test.js",
-        "test:browser-popup": "node --test scripts/browser/popup.test.js"
+        "test:browser-popup": "node --test scripts/browser/popup.test.js",
+        "test:browser-click": "node --test scripts/browser/click.test.js scripts/browser/search-input.test.js",
+        "test:browser-click-real": "node --test scripts/browser/click-browser.test.js"
     },
     "keywords": [
         "Bing Rewards",

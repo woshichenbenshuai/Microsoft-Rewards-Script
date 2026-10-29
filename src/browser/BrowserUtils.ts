@@ -1,8 +1,13 @@
 import { REWARDS_BASE_URL } from '../constants/urls'
 import { type Page, type BrowserContext } from 'patchright'
-import { ClickOptions, createCursor } from 'ghost-cursor-playwright-port'
-
 import type { MicrosoftRewardsBot } from '../index'
+interface BrowserClickOptions {
+    clickCount?: number
+    button?: 'left' | 'right' | 'middle'
+    waitForClick?: number
+}
+
+const CLICK_TIMEOUT_MS = 10000
 
 export default class BrowserUtils {
     private bot: MicrosoftRewardsBot
@@ -202,7 +207,7 @@ export default class BrowserUtils {
         }
     }
 
-    async ghostClick(page: Page, selector: string, options?: ClickOptions): Promise<boolean> {
+    async ghostClick(page: Page, selector: string, options?: BrowserClickOptions): Promise<boolean> {
         try {
             this.bot.logger.debug(
                 this.bot.isMobile,
@@ -210,13 +215,20 @@ export default class BrowserUtils {
                 `Trying to click selector: ${selector}, options: ${JSON.stringify(options)}`
             )
 
-            // Stop here if a previous click removed the target. Calling the cursor anyway
-            // falls back to another unbounded element lookup inside the cursor library.
             await page.waitForSelector(selector, { state: 'visible', timeout: 1000 })
 
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const cursor = createCursor(page as any)
-            await cursor.click(selector, { ...options, waitForSelector: 1000 })
+            // Keep the legacy helper name for callers, but use a cancellable browser
+            // action. The cursor library's boundingBox()/evaluate() calls can hang
+            // indefinitely; bounding only its selector lookup does not bound a click.
+            await page
+                .locator(selector)
+                .first()
+                .click({
+                    timeout: CLICK_TIMEOUT_MS,
+                    clickCount: options?.clickCount ?? 1,
+                    button: options?.button ?? 'left',
+                    delay: options?.waitForClick ?? 0
+                })
 
             return true
         } catch (error) {
