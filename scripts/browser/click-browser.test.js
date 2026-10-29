@@ -1,4 +1,4 @@
-/* global window, document */
+/* global document */
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { chromium } from 'patchright'
@@ -14,13 +14,13 @@ test(
             const page = await browser.newPage()
             const utils = new BrowserUtils({ isMobile: false, logger: { debug() {}, warn() {} } })
             await page.setContent(
-                '<input id="search" value="original query"><button onclick="window.clicked=(window.clicked||0)+1">First</button><button onclick="window.clicked=100">Second</button>'
+                '<input id="search" value="original query"><button data-clicks="0" onclick="this.dataset.clicks=String(Number(this.dataset.clicks)+1)">First</button><button onclick="this.previousElementSibling.dataset.clicks=100">Second</button>'
             )
             assert.equal(await utils.ghostClick(page, '#search', { clickCount: 3 }), true)
             const selected = await page.locator('#search').evaluate(el => el.selectionEnd - el.selectionStart)
             assert.equal(selected, 'original query'.length)
             assert.equal(await utils.ghostClick(page, 'button'), true)
-            assert.equal(await page.evaluate(() => window.clicked), 1)
+            assert.equal(await page.locator('button').first().getAttribute('data-clicks'), '1')
             await page.evaluate(() => {
                 const overlay = document.createElement('div')
                 overlay.id = 'overlay'
@@ -34,12 +34,12 @@ test(
             await page.locator('#overlay').evaluate(el => el.remove())
             await page.waitForTimeout(1000)
             assert.equal(
-                await page.evaluate(() => window.clicked),
-                1,
+                await page.locator('button').first().getAttribute('data-clicks'),
+                '1',
                 'timed-out click must not fire after the overlay disappears'
             )
             assert.equal(await utils.ghostClick(page, 'button'), true)
-            assert.equal(await page.evaluate(() => window.clicked), 2)
+            assert.equal(await page.locator('button').first().getAttribute('data-clicks'), '2')
             await page.locator('#search').evaluate(el => el.remove())
             assert.equal(await utils.ghostClick(page, '#search'), false)
         } finally {
