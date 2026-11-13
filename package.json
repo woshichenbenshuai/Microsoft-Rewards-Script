@@ -22,6 +22,7 @@
         "test:log-parser": "node --test scripts/api/logParser.test.js",
         "test:api-security": "node --test scripts/api/security.test.js scripts/api/processManager.test.js",
         "test:telegram": "node --test scripts/telegram/notification.test.js",
+        "test:async": "node --test scripts/util/async.test.js",
         "test:safety": "node --test scripts/safety/state.test.js",
         "test:dashboard-retry": "node --test scripts/browser/dashboardRetry.test.js",
         "telegram:test": "node ./dist/cli/TelegramTest.js",

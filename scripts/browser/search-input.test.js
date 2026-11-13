@@ -80,7 +80,19 @@ test('the tenth search refreshes the page then uses bounded scroll and click bef
 test('failed click retries before typing, with no duplicate submission', async () => {
     const { search, page, calls } = fixture([false, true])
     await search.bingSearch(page, 'query', false)
-    assert.deepEqual(calls, ['visible', 'scroll', 'click', 'visible', 'scroll', 'click', 'fill', 'type', 'submit'])
+    assert.deepEqual(calls, [
+        'visible',
+        'scroll',
+        'click',
+        'refresh',
+        'dismiss',
+        'visible',
+        'scroll',
+        'click',
+        'fill',
+        'type',
+        'submit'
+    ])
 })
 
 test('five click failures exit without submitting or claiming a search', async () => {

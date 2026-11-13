@@ -76,7 +76,7 @@ export class SearchManager {
                     'SEARCH-MANAGER',
                     `${platform} search failed | ${error instanceof Error ? error.message : String(error)}`
                 )
-                return 0
+                throw error
             }
         })
     }

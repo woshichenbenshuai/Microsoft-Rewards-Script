@@ -7,6 +7,7 @@ import type { MicrosoftRewardsBot } from '../index'
 import type { PageSnapshot, ParsedOffer } from './ReactFunc'
 import { loadSession, saveStorageState } from '../util/SessionStore'
 import { isBrowserClosedError } from '../util/Utils'
+import { OperationTimeoutError, withTimeout } from '../util/Async'
 
 import type { DashboardData } from './../interface/DashboardData'
 import type { AppUserData } from '../interface/AppUserData'
@@ -18,6 +19,7 @@ const DASHBOARD_MAX_ATTEMPTS = 3
 const DASHBOARD_REQUEST_TIMEOUT_MS = 20000
 const DASHBOARD_RETRY_BASE_DELAY_MS = 1000
 const DASHBOARD_RETRY_MAX_DELAY_MS = 4000
+const SESSION_OPERATION_TIMEOUT_MS = 15000
 
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
@@ -552,12 +554,16 @@ export default class BrowserFunc {
         return [...seen]
     }
 
-    async closeBrowser(browser: BrowserContext, email: string, persistSession = true) {
+    async closeBrowser(browser: BrowserContext, email: string, persistSession = true): Promise<boolean> {
         const rootBrowser = browser.browser?.() || null
 
         try {
             if (persistSession) {
-                const storageState = await browser.storageState()
+                const storageState = await withTimeout(
+                    browser.storageState(),
+                    SESSION_OPERATION_TIMEOUT_MS,
+                    'browser session save'
+                )
                 this.bot.logger.debug(
                     this.bot.isMobile,
                     'CLOSE-BROWSER',
@@ -572,21 +578,30 @@ export default class BrowserFunc {
                     'CLOSE-BROWSER',
                     `Session not saved (browser already closing): ${error instanceof Error ? error.message : String(error)}`
                 )
+            } else if (error instanceof OperationTimeoutError) {
+                this.bot.logger.warn(this.bot.isMobile, 'CLOSE-BROWSER', 'Session save timed out; closing without persisting it')
             } else {
                 this.bot.logger.error(this.bot.isMobile, 'CLOSE-BROWSER', `Failed to save session: ${error}`)
             }
         } finally {
             try {
-                await browser.close()
+                await withTimeout(browser.close(), SESSION_OPERATION_TIMEOUT_MS, 'browser context close')
 
                 if (rootBrowser) {
-                    await rootBrowser.close().catch(() => {})
+                    await withTimeout(rootBrowser.close().catch(() => {}), SESSION_OPERATION_TIMEOUT_MS, 'browser process close')
                 }
 
                 this.bot.logger.info(this.bot.isMobile, 'CLOSE-BROWSER', 'All browser resources closed.')
+                return true
             } catch (error) {
                 if (isBrowserClosedError(error)) {
                     this.bot.logger.debug(this.bot.isMobile, 'CLOSE-BROWSER', 'Browser was already closed.')
+                } else if (error instanceof OperationTimeoutError) {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'CLOSE-BROWSER',
+                        `Browser shutdown timed out; continuing without waiting | ${error.message}`
+                    )
                 } else {
                     this.bot.logger.warn(
                         this.bot.isMobile,
@@ -594,6 +609,7 @@ export default class BrowserFunc {
                         'Shutdown encountered an error, but process exiting.'
                     )
                 }
+                return false
             }
         }
     }
@@ -650,14 +666,15 @@ export default class BrowserFunc {
         }
 
         try {
-            await this.syncActiveCookies(page, source, true)
-            return true
-        } catch (error) {
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                source,
-                `Could not checkpoint active session | error=${error instanceof Error ? error.message : String(error)}`
+            return await withTimeout(
+                this.syncActiveCookies(page, source, true),
+                SESSION_OPERATION_TIMEOUT_MS,
+                `${source} session checkpoint`
             )
+        } catch (error) {
+            const message = `Could not checkpoint active session | error=${error instanceof Error ? error.message : String(error)}`
+            if (error instanceof OperationTimeoutError) this.bot.logger.warn(this.bot.isMobile, source, message)
+            else this.bot.logger.debug(this.bot.isMobile, source, message)
             return false
         }
     }
@@ -739,15 +756,15 @@ export default class BrowserFunc {
         return changed
     }
 
-    private async syncActiveCookies(page: Page, source: string, forcePersist = false): Promise<void> {
+    private async syncActiveCookies(page: Page, source: string, forcePersist = false): Promise<boolean> {
         try {
             const context = page.context()
             const liveCookies = await context.cookies()
             const changed = this.updateCookieCache(liveCookies, source)
-            if (!changed && !forcePersist) return
+            if (!changed && !forcePersist) return true
 
             const email = this.bot.currentAccountEmail
-            if (!email) return
+            if (!email) return true
 
             const storageState = await context.storageState()
             saveStorageState(this.bot.config.sessionPath, email, this.bot.isMobile, storageState)
@@ -756,12 +773,14 @@ export default class BrowserFunc {
                 source,
                 `Persisted live browser session | cookies=${storageState.cookies.length} | origins=${storageState.origins.length}`
             )
+            return true
         } catch (error) {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 source,
                 `Could not persist refreshed cookies | error=${error instanceof Error ? error.message : String(error)}`
             )
+            return false
         }
     }
 

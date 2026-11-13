@@ -83,6 +83,11 @@ const terminalTelegramNotificationGate = new TerminalNotificationGate()
 let primaryRunClaimed = false
 let primaryRunDate: string | undefined
 let primaryAccountEmails: string[] = []
+let terminationRequested = false
+
+function throwIfTerminationRequested(): void {
+    if (terminationRequested) throw new Error('Run interrupted by termination signal')
+}
 
 export function getCurrentContext(): ExecutionContext {
     const context = executionContext.getStore()
@@ -776,8 +781,10 @@ export class MicrosoftRewardsBot {
             mobileSession = null
 
             await executionContext.run({ isMobile: true, account }, async () => {
-                await this.browser.func.checkpointActiveSession('PRE-BROWSER-CLOSE')
-                await this.browser.func.closeBrowser(session.context, accountEmail)
+                const checkpointed = await this.browser.func.checkpointActiveSession('PRE-BROWSER-CLOSE')
+                if (!(await this.browser.func.closeBrowser(session.context, accountEmail, checkpointed))) {
+                    throw new Error('Mobile browser session did not close within the safety deadline')
+                }
             })
         }
 
@@ -787,8 +794,10 @@ export class MicrosoftRewardsBot {
             desktopSession = null
 
             await executionContext.run({ isMobile: false, account }, async () => {
-                await this.browser.func.checkpointActiveSession('PRE-BROWSER-CLOSE')
-                await this.browser.func.closeBrowser(session.context, accountEmail)
+                const checkpointed = await this.browser.func.checkpointActiveSession('PRE-BROWSER-CLOSE')
+                if (!(await this.browser.func.closeBrowser(session.context, accountEmail, checkpointed))) {
+                    throw new Error('Desktop browser session did not close within the safety deadline')
+                }
             })
         }
 
@@ -1101,6 +1110,7 @@ export class MicrosoftRewardsBot {
                     }`
                 )
 
+                throwIfTerminationRequested()
                 if (this.config.workers.doClaimBonusPoints) await this.activities.doClaimBonusPoints()
 
                 if (edgeBrowsingTask) {
@@ -1198,6 +1208,7 @@ async function main(): Promise<void> {
         void flushAllWebhooks()
     })
     process.on('SIGINT', async () => {
+        terminationRequested = true
         rewardsBot.logger.warn('main', 'PROCESS', 'SIGINT received, flushing and exiting...')
         await finalizePrimaryFatalSafetyState('SIGINT', 'interrupted').catch(error => {
             console.error('[safety] Could not finalize interrupted run:', error)
@@ -1206,6 +1217,7 @@ async function main(): Promise<void> {
         process.exit(130)
     })
     process.on('SIGTERM', async () => {
+        terminationRequested = true
         rewardsBot.logger.warn('main', 'PROCESS', 'SIGTERM received, flushing and exiting...')
         await finalizePrimaryFatalSafetyState('SIGTERM', 'interrupted').catch(error => {
             console.error('[safety] Could not finalize interrupted run:', error)

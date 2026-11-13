@@ -50,7 +50,7 @@ export class Search extends BaseActivity {
             )
             return stats.totalGained
         } finally {
-            await page.goto(URLs.bing.origin, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+            await page.goto(URLs.bing.origin, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {})
         }
     }
 
@@ -145,7 +145,7 @@ export class Search extends BaseActivity {
                 tracker.context,
                 `Search session error | ${error instanceof Error ? error.message : String(error)}`
             )
-            return stats
+            throw error
         }
     }
     private async bingSearch(page: Page, query: string, isMobile: boolean): Promise<void> {
@@ -203,8 +203,23 @@ export class Search extends BaseActivity {
                     `Search attempt ${attempt}/${MAX_QUERY_ATTEMPTS} failed | query="${query}" | ${error instanceof Error ? error.message : String(error)}`
                 )
                 if (attempt === MAX_QUERY_ATTEMPTS) throw error
+                await this.recoverSearchPage(page, isMobile)
                 await this.bot.utils.wait(2000)
             }
+        }
+    }
+
+    private async recoverSearchPage(page: Page, isMobile: boolean): Promise<void> {
+        try {
+            await page.goto(URLs.bing.origin, { waitUntil: 'domcontentloaded', timeout: 30000 })
+            await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
+            await this.bot.browser.utils.tryDismissAllMessages(page)
+        } catch (error) {
+            this.bot.logger.warn(
+                isMobile,
+                'SEARCH-BING',
+                `Search page recovery failed | ${error instanceof Error ? error.message : String(error)}`
+            )
         }
     }
 
