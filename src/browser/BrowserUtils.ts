@@ -1,6 +1,7 @@
 import { REWARDS_BASE_URL } from '../constants/urls'
 import { type Page, type BrowserContext } from 'patchright'
 import type { MicrosoftRewardsBot } from '../index'
+import { withTimeout } from '../util/Async'
 interface BrowserClickOptions {
     clickCount?: number
     button?: 'left' | 'right' | 'middle'
@@ -243,36 +244,40 @@ export default class BrowserUtils {
 
     async disableFido(page: Page) {
         const routePattern = '**/GetCredentialType.srf*'
-        await page.route(routePattern, route => {
-            try {
-                const request = route.request()
-                const postData = request.postData()
+        await withTimeout(
+            page.route(routePattern, route => {
+                try {
+                    const request = route.request()
+                    const postData = request.postData()
 
-                const body = postData ? JSON.parse(postData) : {}
+                    const body = postData ? JSON.parse(postData) : {}
 
-                body.isFidoSupported = false
+                    body.isFidoSupported = false
 
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'DISABLE-FIDO',
-                    `Modified request body: isFidoSupported set to ${body.isFidoSupported}`
-                )
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'DISABLE-FIDO',
+                        `Modified request body: isFidoSupported set to ${body.isFidoSupported}`
+                    )
 
-                route.continue({
-                    postData: JSON.stringify(body),
-                    headers: {
-                        ...request.headers(),
-                        'Content-Type': 'application/json'
-                    }
-                })
-            } catch (error) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'DISABLE-FIDO',
-                    `An error occurred: ${error instanceof Error ? error.message : String(error)}`
-                )
-                route.continue()
-            }
-        })
+                    route.continue({
+                        postData: JSON.stringify(body),
+                        headers: {
+                            ...request.headers(),
+                            'Content-Type': 'application/json'
+                        }
+                    })
+                } catch (error) {
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'DISABLE-FIDO',
+                        `An error occurred: ${error instanceof Error ? error.message : String(error)}`
+                    )
+                    route.continue()
+                }
+            }),
+            15000,
+            'credential route registration'
+        )
     }
 }

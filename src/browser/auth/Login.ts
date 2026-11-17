@@ -5,6 +5,7 @@ import { saveStorageState } from '../../util/SessionStore'
 import { unknownPageDiagnostic } from '../../util/ErrorDiagnostic'
 import { configureMediaBlocking, suspendMediaBlocking } from '../MediaBlocker'
 import { SafetyTriggerError } from '../../util/SafetyState'
+import { withTimeout } from '../../util/Async'
 
 import { MobileAccessLogin } from './methods/MobileAccessLogin'
 import { EmailLogin } from './methods/EmailLogin'
@@ -99,14 +100,23 @@ export class Login {
             this.passwordlessMethodSelected = false
             this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting login process')
 
-            await page
-                .goto(URLs.rewards.userLogin, {
-                    waitUntil: 'domcontentloaded'
-                })
-                .catch(() => {})
-            await this.bot.utils.wait(2000)
-            await this.bot.browser.utils.reloadBadPage(page)
+            // Register interception before redirects and authentication requests begin.
+            this.bot.logger.info(this.bot.isMobile, 'LOGIN-PREPARE', 'Registering credential handler before navigation')
             await this.bot.browser.utils.disableFido(page)
+            this.bot.logger.info(this.bot.isMobile, 'LOGIN-PREPARE', 'Opening sign-in page')
+            await withTimeout(
+                page
+                    .goto(URLs.rewards.userLogin, {
+                        waitUntil: 'domcontentloaded',
+                        timeout: 30000
+                    })
+                    .catch(() => {}),
+                35000,
+                'sign-in page navigation'
+            )
+            await this.bot.utils.wait(2000)
+            this.bot.logger.info(this.bot.isMobile, 'LOGIN-PREPARE', 'Checking sign-in page readiness')
+            await withTimeout(this.bot.browser.utils.reloadBadPage(page), 35000, 'sign-in page readiness')
 
             const maxIterations = 25
             let iteration = 0
