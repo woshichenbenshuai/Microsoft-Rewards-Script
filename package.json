@@ -25,6 +25,7 @@
         "test:async": "node --test scripts/util/async.test.js",
         "test:safety": "node --test scripts/safety/state.test.js",
         "test:dashboard-retry": "node --test scripts/browser/dashboardRetry.test.js",
+        "test:daily-set": "node --test scripts/browser/daily-set.test.js",
         "telegram:test": "node ./dist/cli/TelegramTest.js",
         "browser:smoke": "node ./dist/cli/BrowserSmoke.js",
         "safety:status": "node ./dist/cli/SafetyControl.js status",
